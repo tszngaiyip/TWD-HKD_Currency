@@ -1,0 +1,8 @@
+Flask
+requests
+matplotlib
+pandas
+jupyter
+ipykernel
+notebook
+schedule

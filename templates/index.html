@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TWD 到 HKD 匯率走勢圖</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>💱 匯率走勢圖</h1>
+            <div class="subtitle">港幣 (HKD) 到 台幣 (TWD) 匯率分析</div>
+        </div>
+        
+        <div class="main-content">
+            <!-- 上方控制區 -->
+            <div class="controls">
+                <div class="controls-content">
+                    <div class="period-buttons">
+                        <button class="period-btn active" data-period="7">近1週</button>
+                        <button class="period-btn" data-period="30">近1個月</button>
+                        <button class="period-btn" data-period="90">近3個月</button>
+                        <button class="period-btn" data-period="180">近6個月</button>
+                    </div>
+                    <div class="action-buttons">
+                        <button class="status-btn" onclick="checkDataStatus()">📊 數據狀態</button>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 下方內容區 -->
+            <div class="content-wrapper">
+                <!-- 圖表區 -->
+                <div class="content">
+                    <div id="error" class="error" style="display: none;"></div>
+                    <div id="success" class="success" style="display: none;"></div>           
+                    <div id="chart-container" class="chart-container">
+                        <!-- 圖表將在這裡顯示 -->
+                    </div>
+                </div>
+                
+                <!-- 右側信息區 -->
+                <div class="info-panel">
+                    <!-- 最新匯率區塊 -->
+                    <div class="latest-rate-section">
+                        <div class="latest-rate-header">
+                            <h3>💰 最新匯率</h3>
+                            <div class="refresh-indicator" id="rate-refresh">
+                                <span>🔄</span>
+                            </div>
+                        </div>
+                        <div id="latest-rate-content" class="latest-rate-content">
+                            <!-- 最新匯率將在這裡顯示 -->
+                        </div>
+                    </div>
+                    
+                    <!-- 統計信息區塊 -->
+                    <div id="stats" class="stats" style="display: none;">
+                        <h3>📈 統計信息</h3>
+                        <div class="stats-grid">
+                            <div class="stat-item">
+                                <div class="stat-label">最高匯率</div>
+                                <div class="stat-value" id="max-rate">-</div>
+                            </div>
+                            <div class="stat-item">
+                                <div class="stat-label">最低匯率</div>
+                                <div class="stat-value" id="min-rate">-</div>
+                            </div>
+                            <div class="stat-item">
+                                <div class="stat-label">平均匯率</div>
+                                <div class="stat-value" id="avg-rate">-</div>
+                            </div>
+                            <div class="stat-item">
+                                <div class="stat-label">數據點數</div>
+                                <div class="stat-value" id="data-points">-</div>
+                            </div>
+                            <div class="stat-item">
+                                <div class="stat-label">日期範圍</div>
+                                <div class="stat-value" id="date-range">-</div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div id="data-status" class="data-status" style="display: none;">
+                        <!-- 數據狀態信息 -->
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Popup 彈出視窗 -->
+    <div id="popup-overlay" class="popup-overlay" onclick="closePopup()">
+        <div class="popup-content" onclick="event.stopPropagation()">
+            <div class="popup-header">
+                <h3 id="popup-title" class="popup-title">標題</h3>
+                <button class="popup-close" onclick="closePopup()">×</button>
+            </div>
+            <div id="popup-body" class="popup-body">
+                <!-- 內容將在這裡顯示 -->
+            </div>
+        </div>
+    </div>
+    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+</body>
+</html> 
