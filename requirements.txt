@@ -6,3 +6,4 @@ jupyter
 ipykernel
 notebook
 schedule
+gunicorn
