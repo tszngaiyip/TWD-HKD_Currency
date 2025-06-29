@@ -187,20 +187,7 @@ body {
     margin: 0;
 }
 
-.refresh-indicator {
-    cursor: pointer;
-    padding: 4px;
-    border-radius: 50%;
-    background: #f8f9fa;
-    transition: all 0.3s ease;
-    font-size: 1rem;
-}
 
-.refresh-indicator:hover {
-    background: #2E86AB;
-    color: white;
-    transform: rotate(180deg);
-}
 
 .latest-rate-content {
     min-height: 60px;

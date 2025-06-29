@@ -23,15 +23,7 @@ document.querySelectorAll('.period-btn').forEach(btn => {
     });
 });
 
-// 最新匯率刷新按鈕點擊事件
-document.addEventListener('DOMContentLoaded', function() {
-    const refreshBtn = document.getElementById('rate-refresh');
-    if (refreshBtn) {
-        refreshBtn.addEventListener('click', function() {
-            loadLatestRate();
-        });
-    }
-});
+
 
 function showError(message) {
     const errorDiv = document.getElementById('error');
