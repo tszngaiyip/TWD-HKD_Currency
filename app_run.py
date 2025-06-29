@@ -17,7 +17,26 @@ import queue
 app = Flask(__name__)
 
 # 設定中文字體
-plt.rcParams['font.sans-serif'] = ['Noto Sans CJK TC', 'Microsoft JhengHei', 'SimHei', 'DejaVu Sans']
+import matplotlib.font_manager as fm
+
+# 檢查專案字體文件夾中的字體
+font_path = os.path.join(os.path.dirname(__file__), 'fonts', 'NotoSansTC-Regular.ttf')
+
+if os.path.exists(font_path):
+    # 使用專案內的字體文件
+    fm.fontManager.addfont(font_path)
+    font_prop = fm.FontProperties(fname=font_path)
+    plt.rcParams['font.sans-serif'] = [font_prop.get_name()]
+    print(f"已加載專案字體: {font_prop.get_name()}")
+else:
+    # 嘗試使用系統字體
+    try:
+        plt.rcParams['font.sans-serif'] = ['Noto Sans CJK TC']
+        print("使用系統字體: Noto Sans CJK TC")
+    except:
+        plt.rcParams['font.sans-serif'] = ['DejaVu Sans']
+        print("警告: 未找到中文字體，請將 NotoSansTC-Regular.ttf 放入 fonts/ 資料夾")
+
 plt.rcParams['axes.unicode_minus'] = False
 
 # 數據文件路徑
