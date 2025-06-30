@@ -497,8 +497,6 @@ function getPrecision(value) {
     return 1;
 }
 
-
-
 // 載入最新匯率
 function loadLatestRate() {
     const params = new URLSearchParams({
@@ -621,10 +619,6 @@ document.addEventListener('keydown', function(event) {
     }
 });
 
-
-
-
-
 function checkDataStatus() {
     
     fetch('/api/data_status')
@@ -669,7 +663,6 @@ function checkDataStatus() {
             showPopup('📊 數據狀態', errorContent);
         });
 }
-
 
 // SSE 相關函數
 function setupSSEConnection() {
