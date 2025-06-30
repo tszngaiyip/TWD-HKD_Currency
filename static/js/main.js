@@ -1,5 +1,7 @@
 let currentPeriod = 7;
 let eventSource = null; // SSE連接
+let currentFromCurrency = 'TWD';
+let currentToCurrency = 'HKD';
 
 // 頁面載入時自動載入圖表和最新匯率
 document.addEventListener('DOMContentLoaded', function() {
@@ -8,7 +10,364 @@ document.addEventListener('DOMContentLoaded', function() {
     
     // 建立SSE連接
     setupSSEConnection();
+    
+    // 綁定貨幣選擇器事件
+    setupCurrencySelectors();
 });
+
+// 設置貨幣選擇器事件（統一搜索下拉選單）
+function setupCurrencySelectors() {
+    setupCurrencyCombobox('from-currency');
+    setupCurrencyCombobox('to-currency');
+    
+    const fromSelect = document.getElementById('from-currency');
+    const toSelect = document.getElementById('to-currency');
+    
+    fromSelect.addEventListener('change', function() {
+        currentFromCurrency = this.value;
+        updateCurrencyDisplay('from-currency');
+        updateDisplay();
+        loadChart(currentPeriod);
+        loadLatestRate();
+    });
+    
+    toSelect.addEventListener('change', function() {
+        currentToCurrency = this.value;
+        updateCurrencyDisplay('to-currency');
+        updateDisplay();
+        loadChart(currentPeriod);
+        loadLatestRate();
+    });
+    
+    // 設置交換箭頭點擊事件
+    setupCurrencySwapButton();
+    
+    // 初始化當前貨幣設置
+    currentFromCurrency = fromSelect.value;
+    currentToCurrency = toSelect.value;
+    updateDisplay();
+    updateCurrencyDisplay('from-currency');
+    updateCurrencyDisplay('to-currency');
+}
+
+// 設置貨幣交換按鈕
+function setupCurrencySwapButton() {
+    const swapButton = document.querySelector('.exchange-arrow');
+    
+    if (swapButton) {
+        swapButton.addEventListener('click', function() {
+            // 添加點擊動畫效果
+            this.style.transform = 'rotate(180deg)';
+            setTimeout(() => {
+                this.style.transform = '';
+            }, 300);
+            
+            // 交換貨幣
+            swapCurrencies();
+        });
+        
+        // 增加視覺提示
+        swapButton.style.cursor = 'pointer';
+        swapButton.title = '點擊交換貨幣';
+    }
+}
+
+// 交換來源貨幣和目標貨幣
+function swapCurrencies() {
+    const fromSelect = document.getElementById('from-currency');
+    const toSelect = document.getElementById('to-currency');
+    
+    // 保存當前值
+    const tempFromValue = fromSelect.value;
+    const tempToValue = toSelect.value;
+    
+    // 交換選擇
+    fromSelect.value = tempToValue;
+    toSelect.value = tempFromValue;
+    
+    // 更新全局變數
+    currentFromCurrency = tempToValue;
+    currentToCurrency = tempFromValue;
+    
+    // 更新顯示
+    updateCurrencyDisplay('from-currency');
+    updateCurrencyDisplay('to-currency');
+    updateDisplay();
+    
+    // 重新載入圖表和最新匯率
+    loadChart(currentPeriod);
+    loadLatestRate();
+    
+    console.log(`🔄 貨幣已交換: ${tempFromValue} ⇔ ${tempToValue} → ${currentFromCurrency} ⇒ ${currentToCurrency}`);
+}
+
+// 設置單個貨幣組合框（統一搜索下拉選單）
+function setupCurrencyCombobox(selectId) {
+    const input = document.getElementById(selectId + '-input');
+    const select = document.getElementById(selectId);
+    const wrapper = input.parentElement;
+    const dropdown = wrapper.querySelector('.currency-dropdown');
+    const arrow = wrapper.querySelector('.currency-dropdown-arrow');
+    
+    let currentHighlight = -1;
+    let filteredOptions = [];
+    let isDropdownOpen = false;
+    
+    // 獲取所有選項
+    const getAllOptions = () => {
+        return Array.from(select.options).map(option => ({
+            value: option.value,
+            text: option.textContent,
+            selected: option.value === select.value
+        }));
+    };
+    
+    // 過濾選項
+    const filterOptions = (searchTerm) => {
+        const allOptions = getAllOptions();
+        if (!searchTerm.trim()) {
+            return allOptions;
+        }
+        
+        const term = searchTerm.toLowerCase();
+        return allOptions.filter(option => 
+            option.text.toLowerCase().includes(term) || 
+            option.value.toLowerCase().includes(term)
+        );
+    };
+    
+    // 創建下拉項目
+    const createDropdownItems = (options) => {
+        dropdown.innerHTML = '';
+        if (options.length === 0) {
+            const noResult = document.createElement('div');
+            noResult.className = 'currency-dropdown-item';
+            noResult.style.color = '#6c757d';
+            noResult.style.fontStyle = 'italic';
+            noResult.textContent = '找不到匹配的貨幣';
+            dropdown.appendChild(noResult);
+            return;
+        }
+        
+        options.forEach((option, index) => {
+            const item = document.createElement('div');
+            item.className = 'currency-dropdown-item';
+            if (option.value === select.value) {
+                item.classList.add('selected');
+            }
+            item.textContent = option.text;
+            item.dataset.value = option.value;
+            item.dataset.index = index;
+            
+            item.addEventListener('click', () => {
+                selectOption(option.value);
+                hideDropdown();
+            });
+            
+            dropdown.appendChild(item);
+        });
+    };
+    
+    // 顯示下拉列表
+    const showDropdown = (isSearchMode = false) => {
+        const searchTerm = isSearchMode ? input.value : '';
+        filteredOptions = filterOptions(searchTerm);
+        createDropdownItems(filteredOptions);
+        dropdown.classList.add('show');
+        wrapper.classList.add('dropdown-active');
+        isDropdownOpen = true;
+        currentHighlight = -1;
+        
+        // 高亮當前選中的項目
+        const selectedIndex = filteredOptions.findIndex(opt => opt.value === select.value);
+        if (selectedIndex >= 0) {
+            highlightItem(selectedIndex);
+        }
+    };
+    
+    // 隱藏下拉列表
+    const hideDropdown = () => {
+        dropdown.classList.remove('show');
+        wrapper.classList.remove('dropdown-active');
+        isDropdownOpen = false;
+        currentHighlight = -1;
+    };
+    
+    // 高亮顯示項目
+    const highlightItem = (index) => {
+        const items = dropdown.querySelectorAll('.currency-dropdown-item');
+        items.forEach(item => item.classList.remove('highlighted'));
+        
+        if (index >= 0 && index < items.length && filteredOptions.length > 0) {
+            items[index].classList.add('highlighted');
+            currentHighlight = index;
+            
+            // 滾動到可見區域
+            items[index].scrollIntoView({
+                block: 'nearest'
+            });
+        }
+    };
+    
+    // 選擇選項
+    const selectOption = (value) => {
+        select.value = value;
+        select.dispatchEvent(new Event('change'));
+        updateInputDisplay();
+    };
+    
+    // 更新輸入框顯示
+    const updateInputDisplay = () => {
+        const selectedOption = select.options[select.selectedIndex];
+        if (selectedOption) {
+            input.value = selectedOption.textContent;
+            input.setAttribute('readonly', 'readonly');
+        }
+    };
+    
+    // 進入搜索模式
+    const enterSearchMode = () => {
+        input.removeAttribute('readonly');
+        input.placeholder = '輸入貨幣代碼或名稱...';
+        input.select(); // 選中所有文字以便輸入
+    };
+    
+    // 退出搜索模式
+    const exitSearchMode = () => {
+        updateInputDisplay();
+        input.placeholder = '點擊選擇或輸入搜索貨幣...';
+    };
+    
+    // 輸入框點擊事件
+    input.addEventListener('click', function(e) {
+        e.stopPropagation();
+        if (this.hasAttribute('readonly')) {
+            // 進入搜索模式
+            enterSearchMode();
+            showDropdown(false); // 顯示所有選項
+        }
+    });
+    
+    // 輸入框輸入事件
+    input.addEventListener('input', function() {
+        if (!this.hasAttribute('readonly')) {
+            showDropdown(true); // 搜索模式
+        }
+    });
+    
+    // 輸入框失去焦點事件
+    input.addEventListener('blur', function(e) {
+        const self = this;
+        // 延遲隱藏，讓點擊下拉項目能夠生效
+        setTimeout(() => {
+            if (!wrapper.contains(document.activeElement)) {
+                hideDropdown();
+                exitSearchMode();
+            }
+        }, 150);
+    });
+    
+    // 鍵盤導航
+    input.addEventListener('keydown', function(e) {
+        if (!isDropdownOpen) return;
+        
+        switch(e.key) {
+            case 'ArrowDown':
+                e.preventDefault();
+                const nextIndex = Math.min(currentHighlight + 1, filteredOptions.length - 1);
+                highlightItem(nextIndex);
+                break;
+                
+            case 'ArrowUp':
+                e.preventDefault();
+                const prevIndex = Math.max(currentHighlight - 1, 0);
+                highlightItem(prevIndex);
+                break;
+                
+            case 'Enter':
+                e.preventDefault();
+                if (currentHighlight >= 0 && filteredOptions.length > 0) {
+                    const selectedOption = filteredOptions[currentHighlight];
+                    selectOption(selectedOption.value);
+                    hideDropdown();
+                    exitSearchMode();
+                }
+                break;
+                
+            case 'Escape':
+                e.preventDefault();
+                hideDropdown();
+                exitSearchMode();
+                input.blur();
+                break;
+                
+            case 'Tab':
+                hideDropdown();
+                exitSearchMode();
+                break;
+        }
+    });
+    
+    // 下拉箭頭點擊事件
+    arrow.addEventListener('click', function(e) {
+        e.stopPropagation();
+        if (isDropdownOpen) {
+            hideDropdown();
+            exitSearchMode();
+        } else {
+            enterSearchMode();
+            showDropdown(false); // 顯示所有選項
+            input.focus();
+        }
+    });
+    
+    // 點擊外部隱藏下拉列表
+    document.addEventListener('click', function(e) {
+        if (!wrapper.contains(e.target)) {
+            hideDropdown();
+            exitSearchMode();
+        }
+    });
+    
+    // 初始化顯示
+    updateInputDisplay();
+}
+
+// 更新貨幣顯示（統一函數名）
+function updateCurrencyDisplay(selectId) {
+    const input = document.getElementById(selectId + '-input');
+    const select = document.getElementById(selectId);
+    const selectedOption = select.options[select.selectedIndex];
+    
+    if (selectedOption && input) {
+        input.value = selectedOption.textContent;
+        input.setAttribute('readonly', 'readonly');
+        input.placeholder = '點擊選擇或輸入搜索貨幣...';
+    }
+}
+
+// 更新搜索輸入框顯示（保留原函數名以兼容）
+function updateCurrencySearchDisplay(selectId) {
+    updateCurrencyDisplay(selectId);
+}
+
+// 更新顯示內容
+function updateDisplay() {
+    // 更新最新匯率區塊標題
+    const rateHeader = document.querySelector('.latest-rate-header h3');
+    if (rateHeader) {
+        rateHeader.textContent = `💰 最新匯率 (${currentFromCurrency} ⇒ ${currentToCurrency})`;
+    }
+    
+    // 更新緩存相關按鈕的可見性
+    const isDefaultPair = (currentFromCurrency === 'TWD' && currentToCurrency === 'HKD');
+    const cacheButtons = document.querySelectorAll('.status-btn');
+    cacheButtons.forEach(btn => {
+        if (btn.textContent.includes('緩存')) {
+            btn.style.display = isDefaultPair ? 'inline-block' : 'none';
+        }
+    });
+}
 
 // 期間按鈕點擊事件
 document.querySelectorAll('.period-btn').forEach(btn => {
@@ -46,7 +405,33 @@ function showSuccess(message) {
 function loadChart(period) {
     const chartContainer = document.getElementById('chart-container');
     
-    fetch(`/api/chart?period=${period}`)
+    // 添加載入指示器
+    const isDefaultPair = (currentFromCurrency === 'TWD' && currentToCurrency === 'HKD');
+    const loadingMessage = isDefaultPair ? 
+        '正在從緩存載入...' : 
+        `正在並行查詢 ${currentFromCurrency} ⇒ ${currentToCurrency} 匯率數據...`;
+    
+    chartContainer.innerHTML = `
+        <div class="chart-loading">
+            <div style="text-align: center; padding: 40px;">
+                <div style="font-size: 2rem; margin-bottom: 15px;">⏳</div>
+                <div style="font-weight: 600; margin-bottom: 10px;">${loadingMessage}</div>
+                ${!isDefaultPair ? `
+                    <div style="font-size: 0.9rem; color: #6c757d; margin-top: 10px;">
+                        🚀 使用並行查詢技術，預計需要 10-30 秒
+                    </div>
+                ` : ''}
+            </div>
+        </div>
+    `;
+    
+    const params = new URLSearchParams({
+        period: period,
+        from_currency: currentFromCurrency,
+        to_currency: currentToCurrency
+    });
+    
+    fetch(`/api/chart?${params.toString()}`)
         .then(response => response.json())
         .then(data => {
             if (data.error) {
@@ -65,18 +450,32 @@ function loadChart(period) {
             
             // 顯示統計信息
             if (data.stats) {
-                document.getElementById('max-rate').textContent = data.stats.max_rate.toFixed(3);
-                document.getElementById('min-rate').textContent = data.stats.min_rate.toFixed(3);
-                document.getElementById('avg-rate').textContent = data.stats.avg_rate.toFixed(3);
+                const precision = getPrecision(data.stats.max_rate);
+                document.getElementById('max-rate').textContent = data.stats.max_rate.toFixed(precision);
+                document.getElementById('min-rate').textContent = data.stats.min_rate.toFixed(precision);
+                document.getElementById('avg-rate').textContent = data.stats.avg_rate.toFixed(precision);
                 document.getElementById('data-points').textContent = data.stats.data_points;
                 document.getElementById('date-range').textContent = data.stats.date_range;
                 document.getElementById('stats').style.display = 'block';
             }
             
-            // 顯示緩存信息（調試用）
-            if (data.from_cache !== undefined) {
-                const cacheStatus = data.from_cache ? '緩存' : '即時生成';
-                console.log(`📊 圖表載入（近${period}天）: ${cacheStatus} - ${data.generated_at}`);
+            // 顯示詳細的緩存信息
+            const isDefaultPair = (currentFromCurrency === 'TWD' && currentToCurrency === 'HKD');
+            const cacheStatus = data.from_cache ? '✅ 緩存' : '🔄 即時生成';
+            const cacheReason = data.cache_reason || (isDefaultPair ? '未知原因' : '非預設貨幣對');
+            const dataCount = data.data_count || 0;
+            
+            console.log(`📊 圖表載入（${currentFromCurrency} ⇒ ${currentToCurrency}，近${period}天）:`);
+            console.log(`   狀態: ${cacheStatus}`);
+            console.log(`   原因: ${cacheReason}`);
+            console.log(`   數據點: ${dataCount}`);
+            console.log(`   生成時間: ${data.generated_at}`);
+            
+            // 顯示成功信息
+            if (!isDefaultPair) {
+                showSuccess(`${currentFromCurrency} ⇒ ${currentToCurrency} 圖表已生成 (${dataCount}個數據點)`);
+            } else if (!data.from_cache) {
+                showSuccess(`圖表已重新生成 (${dataCount}個數據點)`);
             }
         })
         .catch(error => {
@@ -90,11 +489,24 @@ function loadChart(period) {
         });
 }
 
+// 根據數值大小決定顯示精度
+function getPrecision(value) {
+    if (value < 1) return 4;
+    if (value < 10) return 3;
+    if (value < 100) return 2;
+    return 1;
+}
+
 
 
 // 載入最新匯率
 function loadLatestRate() {
-    fetch('/api/latest_rate')
+    const params = new URLSearchParams({
+        from_currency: currentFromCurrency,
+        to_currency: currentToCurrency
+    });
+    
+    fetch(`/api/latest_rate?${params.toString()}`)
         .then(response => response.json())
         .then(data => {
             if (data.success) {
@@ -147,6 +559,13 @@ function displayLatestRate(rateData) {
     
     const trendInfo = getTrendDisplay(rateData.trend, rateData.trend_value);
     
+    // 針對 TWD-HKD 使用 1/rate 顯示
+    const isDefaultPair = (currentFromCurrency === 'TWD' && currentToCurrency === 'HKD');
+    const displayRate = isDefaultPair ? (1 / rateData.rate) : rateData.rate;
+    const rateLabel = isDefaultPair ? 
+        `1 ${currentToCurrency} = ? ${currentFromCurrency}` : 
+        `1 ${currentFromCurrency} = ? ${currentToCurrency}`;
+    
     rateContent.innerHTML = `
         <div class="rate-display">
             <div class="rate-info">
@@ -158,8 +577,8 @@ function displayLatestRate(rateData) {
             </div>
             
             <div class="rate-main">
-                <div class="rate-value">${rateData.rate.toFixed(4)}</div>
-                <div class="rate-label">1 HKD = ? TWD</div>
+                <div class="rate-value">${displayRate.toFixed(getPrecision(displayRate))}</div>
+                <div class="rate-label">${rateLabel}</div>
             </div>
             
             <div class="rate-info">
@@ -388,4 +807,195 @@ if (!document.getElementById('auto-update-styles')) {
         }
     `;
     document.head.appendChild(style);
+}
+
+// 檢查緩存狀態
+function checkCacheStatus() {
+    fetch('/api/chart_cache_status')
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                displayCacheStatus(data);
+            } else {
+                showError('獲取緩存狀態失敗: ' + data.message);
+            }
+        })
+        .catch(error => {
+            showError('檢查緩存狀態時發生錯誤: ' + error.message);
+        });
+}
+
+// 顯示緩存狀態
+function displayCacheStatus(data) {
+    const cacheInfo = data.cache_info;
+    const summary = data.summary;
+    
+    let content = `
+        <div class="cache-status-container">
+            <div class="cache-summary">
+                <h4>📊 緩存概況</h4>
+                <div class="summary-grid">
+                    <div class="summary-item">
+                        <span class="label">總期間數:</span>
+                        <span class="value">${summary.total_periods}</span>
+                    </div>
+                    <div class="summary-item">
+                        <span class="label">已緩存:</span>
+                        <span class="value">${summary.total_cached}</span>
+                    </div>
+                    <div class="summary-item">
+                        <span class="label">有效緩存:</span>
+                        <span class="value">${summary.valid_cached}</span>
+                    </div>
+                    <div class="summary-item">
+                        <span class="label">緩存效率:</span>
+                        <span class="value">${summary.cache_efficiency}</span>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="cache-details">
+                <h4>📋 詳細狀態</h4>
+                <div class="cache-items">
+    `;
+    
+    for (const [period, info] of Object.entries(cacheInfo)) {
+        const statusIcon = info.is_valid ? '✅' : (info.cached ? '⚠️' : '❌');
+        const statusText = info.is_valid ? '有效' : info.validity_reason;
+        const ageText = info.cached ? `${info.cache_age_hours.toFixed(1)}小時前` : '-';
+        
+        content += `
+            <div class="cache-item ${info.is_valid ? 'valid' : (info.cached ? 'invalid' : 'missing')}">
+                <div class="cache-item-header">
+                    <span class="cache-icon">${statusIcon}</span>
+                    <span class="cache-period">${info.period_name}</span>
+                    <span class="cache-status">${statusText}</span>
+                </div>
+                <div class="cache-item-details">
+                    <div>數據點: ${info.data_count}</div>
+                    <div>生成時間: ${ageText}</div>
+                    <div class="cache-actions">
+                        <button onclick="regenerateChart(${period})" class="btn-small">🔄 重新生成</button>
+                        ${info.cached ? `<button onclick="clearCache(${period})" class="btn-small btn-danger">🗑️ 清除</button>` : ''}
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+    
+    content += `
+                </div>
+            </div>
+            
+            <div class="cache-global-actions">
+                <button onclick="clearCache('all')" class="btn btn-danger">🗑️ 清除所有緩存</button>
+                <button onclick="regenerateAllCharts()" class="btn btn-primary">🔄 重新生成所有圖表</button>
+            </div>
+        </div>
+        
+        <style>
+            .cache-status-container { padding: 20px; }
+            .cache-summary { margin-bottom: 20px; }
+            .summary-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-top: 10px; }
+            .summary-item { display: flex; justify-content: space-between; padding: 8px; background: #f5f5f5; border-radius: 4px; }
+            .cache-items { space: 10px; }
+            .cache-item { border: 1px solid #ddd; border-radius: 8px; padding: 12px; margin-bottom: 10px; }
+            .cache-item.valid { border-color: #4CAF50; background: #f8fff8; }
+            .cache-item.invalid { border-color: #FF9800; background: #fff8f0; }
+            .cache-item.missing { border-color: #f44336; background: #fff5f5; }
+            .cache-item-header { display: flex; align-items: center; gap: 10px; font-weight: bold; }
+            .cache-item-details { margin-top: 8px; font-size: 0.9rem; color: #666; }
+            .cache-actions { margin-top: 8px; }
+            .btn-small { padding: 4px 8px; font-size: 0.8rem; margin-right: 5px; border: none; border-radius: 3px; cursor: pointer; }
+            .btn-danger { background: #f44336; color: white; }
+            .cache-global-actions { margin-top: 20px; text-align: center; }
+            .btn { padding: 10px 20px; margin: 0 5px; border: none; border-radius: 5px; cursor: pointer; }
+            .btn-primary { background: #2196F3; color: white; }
+        </style>
+    `;
+    
+    showPopup('緩存狀態管理', content);
+}
+
+// 清除緩存
+function clearCache(period) {
+    if (period === 'all') {
+        if (!confirm('確定要清除所有緩存嗎？這會導致下次請求時重新生成所有圖表。')) {
+            return;
+        }
+    }
+    
+    fetch(`/api/clear_cache?period=${period}`)
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                showSuccess(data.message);
+                if (period === 'all') {
+                    closePopup();
+                } else {
+                    // 重新顯示緩存狀態
+                    setTimeout(() => checkCacheStatus(), 500);
+                }
+            } else {
+                showError('清除緩存失敗: ' + data.message);
+            }
+        })
+        .catch(error => {
+            showError('清除緩存時發生錯誤: ' + error.message);
+        });
+}
+
+// 重新生成圖表
+function regenerateChart(period) {
+    showSuccess(`正在重新生成近${period}天的圖表...`);
+    
+    fetch(`/api/regenerate_chart?period=${period}`)
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                showSuccess(data.message);
+                
+                // 如果是當前顯示的期間，刷新圖表
+                if (period == currentPeriod) {
+                    loadChart(currentPeriod);
+                }
+                
+                // 重新顯示緩存狀態
+                setTimeout(() => checkCacheStatus(), 500);
+            } else {
+                showError('重新生成圖表失敗: ' + data.message);
+            }
+        })
+        .catch(error => {
+            showError('重新生成圖表時發生錯誤: ' + error.message);
+        });
+}
+
+// 重新生成所有圖表
+function regenerateAllCharts() {
+    if (!confirm('確定要重新生成所有圖表嗎？這可能需要一些時間。')) {
+        return;
+    }
+    
+    const periods = [7, 30, 90, 180];
+    let completed = 0;
+    
+    showSuccess('正在重新生成所有圖表，請稍候...');
+    
+    periods.forEach(period => {
+        fetch(`/api/regenerate_chart?period=${period}`)
+            .then(response => response.json())
+            .then(data => {
+                completed++;
+                if (completed === periods.length) {
+                    showSuccess('所有圖表重新生成完成！');
+                    loadChart(currentPeriod); // 刷新當前圖表
+                    setTimeout(() => checkCacheStatus(), 1000);
+                }
+            })
+            .catch(error => {
+                completed++;
+                console.error(`期間${period}重新生成失敗:`, error);
+            });
+    });
 } 
