@@ -264,7 +264,7 @@ class ExchangeRateManager:
         
         return date_str, None
 
-    def get_live_rates_for_period(self, days, from_currency='TWD', to_currency='HKD', max_workers=20):
+    def get_live_rates_for_period(self, days, from_currency='TWD', to_currency='HKD', max_workers=5):
         """獲取指定期間的即時匯率數據（並行查詢版本）"""
         end_date = datetime.now()
         start_date = end_date - timedelta(days=days)

@@ -2,6 +2,18 @@ let currentPeriod = 7;
 let eventSource = null; // SSE連接
 let currentFromCurrency = 'TWD';
 let currentToCurrency = 'HKD';
+let isSwapping = false; // 防止交換時重複觸發事件
+
+// 多幣種查詢冷卻機制
+let lastCurrencyChangeTime = 0;
+const CURRENCY_CHANGE_COOLDOWN = 30000; // 30秒冷卻期
+let isLoadingAllCharts = false; // 是否正在載入所有圖表
+
+// 非預設貨幣對的圖表緩存 - LRU機制
+const MAX_CACHE_SIZE = 5; // 最多緩存5個貨幣對
+let currencyPairCache = {}; // 格式: {'USD-EUR': {7: {chart: '...', stats: {...}}, 30: {...}}}
+let cacheUsageOrder = []; // LRU使用順序，最新使用的在前面
+let currentCacheKey = ''; // 當前緩存鍵值
 
 // 頁面載入時自動載入圖表和最新匯率
 document.addEventListener('DOMContentLoaded', function() {
@@ -15,6 +27,382 @@ document.addEventListener('DOMContentLoaded', function() {
     setupCurrencySelectors();
 });
 
+// 檢查是否在冷卻期內
+function isInCooldown() {
+    const now = Date.now();
+    const timeSinceLastChange = now - lastCurrencyChangeTime;
+    return timeSinceLastChange < CURRENCY_CHANGE_COOLDOWN;
+}
+
+// 獲取剩餘冷卻時間（秒）
+function getRemainingCooldownTime() {
+    const now = Date.now();
+    const timeSinceLastChange = now - lastCurrencyChangeTime;
+    const remainingTime = CURRENCY_CHANGE_COOLDOWN - timeSinceLastChange;
+    return Math.max(0, Math.ceil(remainingTime / 1000));
+}
+
+// 顯示冷卻期提示
+function showCooldownMessage() {
+    const remainingTime = getRemainingCooldownTime();
+    showError(`請等待 ${remainingTime} 秒後再進行貨幣查詢，避免被API拒絕`);
+}
+
+// 生成貨幣對緩存鍵值
+function getCacheKey(fromCurrency, toCurrency) {
+    return `${fromCurrency}-${toCurrency}`;
+}
+
+// 檢查緩存中是否有完整的貨幣對數據
+function hasCachedData(cacheKey) {
+    if (!currencyPairCache[cacheKey]) return false;
+    
+    const periods = [7, 30, 90, 180];
+    return periods.every(period => 
+        currencyPairCache[cacheKey][period] && 
+        currencyPairCache[cacheKey][period].chart
+    );
+}
+
+// 從緩存載入圖表
+function loadFromCache(cacheKey, period) {
+    const cachedData = currencyPairCache[cacheKey][period];
+    if (!cachedData) return false;
+    
+    // 更新LRU使用順序
+    updateCacheUsage(cacheKey);
+    
+    // 更新圖表顯示
+    if (period === currentPeriod) {
+        const chartContainer = document.getElementById('chart-container');
+        chartContainer.innerHTML = `<img src="data:image/png;base64,${cachedData.chart}" alt="匯率走勢圖">`;
+        
+        // 更新統計信息
+        if (cachedData.stats) {
+            const precision = getPrecision(cachedData.stats.max_rate);
+            document.getElementById('max-rate').textContent = cachedData.stats.max_rate.toFixed(precision);
+            document.getElementById('min-rate').textContent = cachedData.stats.min_rate.toFixed(precision);
+            document.getElementById('avg-rate').textContent = cachedData.stats.avg_rate.toFixed(precision);
+            document.getElementById('data-points').textContent = cachedData.stats.data_points;
+            document.getElementById('date-range').textContent = cachedData.stats.date_range;
+            document.getElementById('stats').style.display = 'block';
+        }
+    }
+    
+    return true;
+}
+
+// 載入所有期間的圖表
+function loadAllCharts() {
+    if (isLoadingAllCharts) {
+        console.log('🔄 正在載入圖表中，跳過重複請求');
+        return;
+    }
+    
+    const cacheKey = getCacheKey(currentFromCurrency, currentToCurrency);
+    
+    // 檢查是否有緩存數據
+    if (hasCachedData(cacheKey)) {
+        const stats = getCacheStats();
+        console.log(`📦 從緩存載入 ${currentFromCurrency} ⇒ ${currentToCurrency} 圖表`);
+        console.log(`💾 緩存狀態: ${stats.totalPairs}/${stats.maxSize} 貨幣對, ${stats.totalCharts} 個圖表`);
+        loadFromCache(cacheKey, currentPeriod);
+        showSuccess(`已從緩存載入 ${currentFromCurrency} ⇒ ${currentToCurrency} 圖表！`);
+        currentCacheKey = cacheKey;
+        return;
+    }
+    
+    if (isInCooldown()) {
+        showCooldownMessage();
+        return;
+    }
+    
+    isLoadingAllCharts = true;
+    lastCurrencyChangeTime = Date.now();
+    currentCacheKey = cacheKey;
+    
+    const periods = [7, 30, 90, 180];
+    const periodNames = {7: '1週', 30: '1個月', 90: '3個月', 180: '6個月'};
+    
+    console.log(`🚀 並行載入所有期間的 ${currentFromCurrency} ⇒ ${currentToCurrency} 圖表...`);
+    
+    // 顯示載入進度
+    showLoadingProgress(periods, periodNames);
+    
+    // 並行載入所有期間的圖表
+    let completedCount = 0;
+    let hasError = false;
+    
+    periods.forEach((period) => {
+        loadChartWithCallback(period, (success, error, chartData) => {
+            completedCount++;
+            
+            if (!success) {
+                hasError = true;
+                console.error(`❌ 載入近${period}天圖表失敗:`, error);
+                updateLoadingProgress(period, false, error);
+            } else {
+                console.log(`✅ 載入近${period}天圖表成功`);
+                updateLoadingProgress(period, true);
+                
+                // 將數據存入LRU緩存
+                if (chartData) {
+                    addToCache(cacheKey, period, chartData);
+                }
+            }
+            
+            // 如果所有圖表都已載入完成
+            if (completedCount === periods.length) {
+                isLoadingAllCharts = false;
+                
+                if (hasError) {
+                    showError('部分圖表載入失敗，請檢查網路連接');
+                } else {
+                    const stats = getCacheStats();
+                    showSuccess(`所有 ${currentFromCurrency} ⇒ ${currentToCurrency} 圖表已載入並暫存！`);
+                    console.log(`💾 LRU緩存更新: ${stats.totalPairs}/${stats.maxSize} 貨幣對`);
+                    console.log(`📋 使用順序: [${stats.usageOrder.join(', ')}]`);
+                }
+                
+                hideLoadingProgress();
+                
+                // 設置冷卻期提示
+                setTimeout(showCooldownReminder, 1000);
+            }
+        });
+    });
+}
+
+// 顯示載入進度
+function showLoadingProgress(periods, periodNames) {
+    const progressContainer = document.createElement('div');
+    progressContainer.id = 'chart-loading-progress';
+    progressContainer.className = 'chart-loading-progress';
+    progressContainer.innerHTML = `
+        <div class="progress-header">
+            <h4>🚀 正在載入 ${currentFromCurrency} ⇒ ${currentToCurrency} 圖表...</h4>
+            <p>並行載入所有期間圖表，完成後將暫存於本地</p>
+        </div>
+        <div class="progress-list">
+            ${periods.map(period => `
+                <div class="progress-item" id="progress-${period}">
+                    <span class="progress-icon">⏳</span>
+                    <span class="progress-text">近${periodNames[period]}圖表</span>
+                    <span class="progress-status">載入中...</span>
+                </div>
+            `).join('')}
+        </div>
+    `;
+    
+    // 將進度顯示器插入到圖表容器前面
+    const chartContainer = document.getElementById('chart-container');
+    chartContainer.parentNode.insertBefore(progressContainer, chartContainer);
+}
+
+// 更新載入進度
+function updateLoadingProgress(period, success, error = null) {
+    const progressItem = document.getElementById(`progress-${period}`);
+    if (!progressItem) return;
+    
+    const icon = progressItem.querySelector('.progress-icon');
+    const status = progressItem.querySelector('.progress-status');
+    
+    if (success) {
+        icon.textContent = '✅';
+        status.textContent = '完成';
+        progressItem.style.color = '#28a745';
+    } else {
+        icon.textContent = '❌';
+        status.textContent = error ? `失敗: ${error}` : '失敗';
+        progressItem.style.color = '#dc3545';
+    }
+}
+
+// 隱藏載入進度
+function hideLoadingProgress() {
+    const progressContainer = document.getElementById('chart-loading-progress');
+    if (progressContainer) {
+        progressContainer.remove();
+    }
+}
+
+// LRU緩存管理函數
+function updateCacheUsage(cacheKey) {
+    // 將指定的緩存鍵移到使用順序的最前面
+    const index = cacheUsageOrder.indexOf(cacheKey);
+    if (index > -1) {
+        cacheUsageOrder.splice(index, 1);
+    }
+    cacheUsageOrder.unshift(cacheKey);
+    
+    console.log(`📈 更新緩存使用順序: [${cacheUsageOrder.join(', ')}]`);
+}
+
+function cleanupOldCache() {
+    // 當緩存超過最大限制時，刪除最久沒用的貨幣對
+    while (cacheUsageOrder.length > MAX_CACHE_SIZE) {
+        const oldestKey = cacheUsageOrder.pop();
+        if (currencyPairCache[oldestKey]) {
+            delete currencyPairCache[oldestKey];
+            console.log(`🗑️ LRU清理: 刪除最久未使用的緩存 "${oldestKey}"`);
+        }
+    }
+}
+
+function addToCache(cacheKey, period, chartData) {
+    // 添加數據到緩存
+    if (!currencyPairCache[cacheKey]) {
+        currencyPairCache[cacheKey] = {};
+    }
+    currencyPairCache[cacheKey][period] = chartData;
+    
+    // 更新使用順序
+    updateCacheUsage(cacheKey);
+    
+    // 清理超過限制的緩存
+    cleanupOldCache();
+}
+
+function getCacheStats() {
+    // 獲取緩存統計信息
+    const totalPairs = Object.keys(currencyPairCache).length;
+    const totalCharts = Object.values(currencyPairCache).reduce((sum, pair) => {
+        return sum + Object.keys(pair).length;
+    }, 0);
+    
+    return {
+        totalPairs,
+        totalCharts,
+        usageOrder: [...cacheUsageOrder],
+        maxSize: MAX_CACHE_SIZE
+    };
+}
+
+// 清除所有緩存
+function clearAllCache() {
+    currencyPairCache = {};
+    cacheUsageOrder = [];
+    currentCacheKey = '';
+    console.log('🗑️ 已清除所有貨幣對緩存');
+}
+
+// 顯示冷卻期提醒
+function showCooldownReminder() {
+    const cooldownTime = CURRENCY_CHANGE_COOLDOWN / 1000;
+    showSuccess(`載入完成！接下來${cooldownTime}秒內無法進行新的貨幣查詢，避免API限制`);
+    
+    // 創建冷卻期提示元素
+    const cooldownNotice = document.createElement('div');
+    cooldownNotice.id = 'cooldown-notice';
+    cooldownNotice.className = 'cooldown-notice';
+    cooldownNotice.style.cssText = `
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        background: #fff3cd;
+        border: 1px solid #ffeaa7;
+        border-radius: 6px;
+        padding: 12px 16px;
+        font-size: 0.9rem;
+        color: #856404;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        z-index: 1050;
+        max-width: 300px;
+        animation: slideIn 0.3s ease-out;
+    `;
+    
+    let remainingTime = cooldownTime;
+    
+    const updateNotice = () => {
+        if (remainingTime > 0) {
+            cooldownNotice.innerHTML = `
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <span>⏱️</span>
+                    <span>冷卻期剩餘: <strong>${remainingTime}秒</strong></span>
+                </div>
+            `;
+        } else {
+            cooldownNotice.innerHTML = `
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <span>✅</span>
+                    <span>可以進行新查詢了！</span>
+                </div>
+            `;
+            cooldownNotice.style.background = '#d4edda';
+            cooldownNotice.style.borderColor = '#c3e6cb';
+            cooldownNotice.style.color = '#155724';
+            
+            setTimeout(() => {
+                if (cooldownNotice.parentNode) {
+                    cooldownNotice.remove();
+                }
+            }, 3000);
+        }
+    };
+    
+    // 初始顯示
+    updateNotice();
+    document.body.appendChild(cooldownNotice);
+    
+    // 開始倒計時
+    const countdownInterval = setInterval(() => {
+        remainingTime--;
+        updateNotice();
+        
+        if (remainingTime <= 0) {
+            clearInterval(countdownInterval);
+        }
+    }, 1000);
+}
+
+// 帶回調的圖表載入函數
+function loadChartWithCallback(period, callback) {
+    const params = new URLSearchParams({
+        period: period,
+        from_currency: currentFromCurrency,
+        to_currency: currentToCurrency
+    });
+    
+    fetch(`/api/chart?${params.toString()}`)
+        .then(response => response.json())
+        .then(data => {
+            if (data.error) {
+                callback(false, data.error, null);
+                return;
+            }
+            
+            // 準備緩存數據
+            const chartData = {
+                chart: data.chart,
+                stats: data.stats,
+                generated_at: data.generated_at || new Date().toISOString(),
+                from_cache: false
+            };
+            
+            // 如果這是當前選中的期間，更新顯示
+            if (period === currentPeriod) {
+                const chartContainer = document.getElementById('chart-container');
+                chartContainer.innerHTML = `<img src="data:image/png;base64,${data.chart}" alt="匯率走勢圖">`;
+                
+                // 更新統計信息
+                if (data.stats) {
+                    const precision = getPrecision(data.stats.max_rate);
+                    document.getElementById('max-rate').textContent = data.stats.max_rate.toFixed(precision);
+                    document.getElementById('min-rate').textContent = data.stats.min_rate.toFixed(precision);
+                    document.getElementById('avg-rate').textContent = data.stats.avg_rate.toFixed(precision);
+                    document.getElementById('data-points').textContent = data.stats.data_points;
+                    document.getElementById('date-range').textContent = data.stats.date_range;
+                    document.getElementById('stats').style.display = 'block';
+                }
+            }
+            
+            callback(true, null, chartData);
+        })
+        .catch(error => {
+            callback(false, error.message, null);
+        });
+}
+
 // 設置貨幣選擇器事件（統一搜索下拉選單）
 function setupCurrencySelectors() {
     setupCurrencyCombobox('from-currency');
@@ -24,18 +412,40 @@ function setupCurrencySelectors() {
     const toSelect = document.getElementById('to-currency');
     
     fromSelect.addEventListener('change', function() {
+        if (isSwapping) return; // 如果正在交換，跳過處理
         currentFromCurrency = this.value;
         updateCurrencyDisplay('from-currency');
         updateDisplay();
-        loadChart(currentPeriod);
+        
+        // 檢查是否為預設貨幣對
+        const isDefaultPair = (currentFromCurrency === 'TWD' && currentToCurrency === 'HKD');
+        if (isDefaultPair) {
+            // 預設貨幣對只載入當前期間圖表
+            loadChart(currentPeriod);
+        } else {
+            // 非預設貨幣對載入所有期間圖表
+            loadAllCharts();
+        }
+        
         loadLatestRate();
     });
     
     toSelect.addEventListener('change', function() {
+        if (isSwapping) return; // 如果正在交換，跳過處理
         currentToCurrency = this.value;
         updateCurrencyDisplay('to-currency');
         updateDisplay();
-        loadChart(currentPeriod);
+        
+        // 檢查是否為預設貨幣對
+        const isDefaultPair = (currentFromCurrency === 'TWD' && currentToCurrency === 'HKD');
+        if (isDefaultPair) {
+            // 預設貨幣對只載入當前期間圖表
+            loadChart(currentPeriod);
+        } else {
+            // 非預設貨幣對載入所有期間圖表
+            loadAllCharts();
+        }
+        
         loadLatestRate();
     });
     
@@ -43,8 +453,19 @@ function setupCurrencySelectors() {
     setupCurrencySwapButton();
     
     // 初始化當前貨幣設置
-    currentFromCurrency = fromSelect.value;
-    currentToCurrency = toSelect.value;
+    currentFromCurrency = fromSelect.value || 'TWD';
+    currentToCurrency = toSelect.value || 'HKD';
+    
+    console.log(`🔧 初始化貨幣: currentFromCurrency="${currentFromCurrency}", currentToCurrency="${currentToCurrency}"`);
+    
+    // 確保 select 元素有正確的值
+    if (fromSelect.value !== currentFromCurrency) {
+        fromSelect.value = currentFromCurrency;
+    }
+    if (toSelect.value !== currentToCurrency) {
+        toSelect.value = currentToCurrency;
+    }
+    
     updateDisplay();
     updateCurrencyDisplay('from-currency');
     updateCurrencyDisplay('to-currency');
@@ -77,9 +498,27 @@ function swapCurrencies() {
     const fromSelect = document.getElementById('from-currency');
     const toSelect = document.getElementById('to-currency');
     
+    // 檢查元素是否存在
+    if (!fromSelect || !toSelect) {
+        console.error('❌ 無法找到貨幣選擇器元素');
+        return;
+    }
+    
     // 保存當前值
     const tempFromValue = fromSelect.value;
     const tempToValue = toSelect.value;
+    
+    console.log(`🔄 交換前: fromSelect.value="${tempFromValue}", toSelect.value="${tempToValue}"`);
+    console.log(`🔄 交換前: currentFromCurrency="${currentFromCurrency}", currentToCurrency="${currentToCurrency}"`);
+    
+    // 驗證值不為空
+    if (!tempFromValue || !tempToValue) {
+        console.error('❌ 選擇器值為空', {tempFromValue, tempToValue});
+        return;
+    }
+    
+    // 設置交換標誌，避免重複觸發事件
+    isSwapping = true;
     
     // 交換選擇
     fromSelect.value = tempToValue;
@@ -89,13 +528,27 @@ function swapCurrencies() {
     currentFromCurrency = tempToValue;
     currentToCurrency = tempFromValue;
     
+    console.log(`🔄 交換後: fromSelect.value="${fromSelect.value}", toSelect.value="${toSelect.value}"`);
+    console.log(`🔄 交換後: currentFromCurrency="${currentFromCurrency}", currentToCurrency="${currentToCurrency}"`);
+    
     // 更新顯示
     updateCurrencyDisplay('from-currency');
     updateCurrencyDisplay('to-currency');
     updateDisplay();
     
+    // 重置交換標誌
+    isSwapping = false;
+    
     // 重新載入圖表和最新匯率
-    loadChart(currentPeriod);
+    const isDefaultPair = (currentFromCurrency === 'TWD' && currentToCurrency === 'HKD');
+    if (isDefaultPair) {
+        // 預設貨幣對只載入當前期間圖表
+        loadChart(currentPeriod);
+    } else {
+        // 非預設貨幣對載入所有期間圖表
+        loadAllCharts();
+    }
+    
     loadLatestRate();
     
     console.log(`🔄 貨幣已交換: ${tempFromValue} ⇔ ${tempToValue} → ${currentFromCurrency} ⇒ ${currentToCurrency}`);
@@ -321,13 +774,24 @@ function setupCurrencyCombobox(selectId) {
         }
     });
     
-    // 點擊外部隱藏下拉列表
-    document.addEventListener('click', function(e) {
+    // 為這個wrapper添加唯一的click handler
+    const wrapperClickHandler = (e) => {
         if (!wrapper.contains(e.target)) {
             hideDropdown();
             exitSearchMode();
         }
-    });
+    };
+    
+    // 存儲handler引用以便後續清理
+    wrapper._clickHandler = wrapperClickHandler;
+    
+    // 如果已經有handler，先移除
+    if (wrapper._clickHandlerAdded) {
+        document.removeEventListener('click', wrapper._clickHandler);
+    }
+    
+    document.addEventListener('click', wrapperClickHandler);
+    wrapper._clickHandlerAdded = true;
     
     // 初始化顯示
     updateInputDisplay();
@@ -378,6 +842,19 @@ document.querySelectorAll('.period-btn').forEach(btn => {
         this.classList.add('active');
         
         currentPeriod = parseInt(this.dataset.period);
+        
+        // 檢查是否為非預設貨幣對且有緩存
+        const isDefaultPair = (currentFromCurrency === 'TWD' && currentToCurrency === 'HKD');
+        if (!isDefaultPair && currentCacheKey) {
+            const cacheKey = getCacheKey(currentFromCurrency, currentToCurrency);
+            if (cacheKey === currentCacheKey && currencyPairCache[cacheKey] && currencyPairCache[cacheKey][currentPeriod]) {
+                console.log(`📦 從緩存載入 ${currentFromCurrency} ⇒ ${currentToCurrency} 近${currentPeriod}天圖表`);
+                loadFromCache(cacheKey, currentPeriod);
+                return;
+            }
+        }
+        
+        // 載入圖表（預設貨幣對或無緩存時）
         loadChart(currentPeriod);
     });
 });
@@ -556,6 +1033,13 @@ function displayLatestRate(rateData) {
     };
     
     const trendInfo = getTrendDisplay(rateData.trend, rateData.trend_value);
+    
+    // 檢查全局變數是否有效
+    if (!currentFromCurrency || !currentToCurrency) {
+        console.error('❌ 全局貨幣變數為空', {currentFromCurrency, currentToCurrency});
+        showRateError('貨幣設置錯誤，請重新載入頁面');
+        return;
+    }
     
     // 針對 TWD-HKD 使用 1/rate 顯示
     const isDefaultPair = (currentFromCurrency === 'TWD' && currentToCurrency === 'HKD');
@@ -991,4 +1475,56 @@ function regenerateAllCharts() {
                 console.error(`期間${period}重新生成失敗:`, error);
             });
     });
+}
+
+// 檢查LRU緩存狀態
+function checkLRUCacheStatus() {
+    const stats = getCacheStats();
+    
+    let content = `<div>
+        <p><strong>📊 LRU緩存狀態</strong></p>
+        <p>🗂️ 已緩存貨幣對: <strong>${stats.totalPairs}/${stats.maxSize}</strong></p>
+        <p>📈 總圖表數量: <strong>${stats.totalCharts}</strong></p>
+        <p>🔄 當前貨幣對: <strong>${currentCacheKey || '無'}</strong></p>
+        
+        <div style="margin-top: 15px;">
+            <p><strong>📋 使用順序 (最新 → 最舊):</strong></p>
+            <div style="background: #f8f9fa; padding: 10px; border-radius: 4px; margin-top: 5px;">`;
+    
+    if (stats.usageOrder.length === 0) {
+        content += '<em style="color: #6c757d;">暫無緩存數據</em>';
+    } else {
+        stats.usageOrder.forEach((key, index) => {
+            const chartCount = currencyPairCache[key] ? Object.keys(currencyPairCache[key]).length : 0;
+            const isCurrent = key === currentCacheKey;
+            const prefix = isCurrent ? '🟢' : '⚪';
+            content += `
+                <div style="margin: 5px 0; ${isCurrent ? 'font-weight: bold; color: #2E86AB;' : ''}">
+                    ${prefix} ${index + 1}. ${key} (${chartCount}個圖表)
+                </div>`;
+        });
+    }
+    
+    content += `</div>
+        </div>
+        
+        <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #dee2e6;">
+            <p><strong>💡 說明:</strong></p>
+            <ul style="margin: 5px 0; padding-left: 20px; font-size: 0.9rem;">
+                <li>最多同時緩存 ${stats.maxSize} 個貨幣對</li>
+                <li>超過限制時會自動刪除最久未使用的</li>
+                <li>🟢 表示當前使用的貨幣對</li>
+                <li>每個貨幣對包含4個期間的圖表</li>
+            </ul>
+        </div>
+        
+        <div style="margin-top: 15px; text-align: center;">
+            <button onclick="clearAllCache(); checkLRUCacheStatus(); setTimeout(() => location.reload(), 1000);" 
+                    style="background: #dc3545; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer;">
+                🗑️ 清除所有緩存
+            </button>
+        </div>
+    </div>`;
+    
+    showPopup('LRU緩存狀態', content);
 } 

@@ -185,76 +185,9 @@ body {
     display: none;
 }
 
-.currency-search {
-    width: 100%;
-    padding: 8px 12px;
-    border: 2px solid #dce4ec;
-    border-radius: 6px 6px 0 0;
-    font-size: 0.85rem;
-    background: white;
-    color: #495057;
-    transition: all 0.3s ease;
-    z-index: 10;
-    position: relative;
-    cursor: pointer;
-}
 
-.currency-search[readonly] {
-    background: #f8f9fa;
-    cursor: pointer;
-}
 
-.currency-search[readonly]:hover {
-    background: #e9ecef;
-    border-color: #2E86AB;
-}
 
-.currency-search:not([readonly]) {
-    cursor: text;
-    background: white;
-}
-
-.currency-search:focus {
-    outline: none;
-    border-color: #2E86AB;
-    box-shadow: 0 0 0 2px rgba(46, 134, 171, 0.1);
-    cursor: text;
-}
-
-.currency-select {
-    width: 100%;
-    padding: 8px 12px;
-    border: 2px solid #dce4ec;
-    border-top: 1px solid #dce4ec;
-    border-radius: 0 0 6px 6px;
-    font-size: 0.85rem;
-    background: white;
-    color: #495057;
-    cursor: pointer;
-    transition: all 0.3s ease;
-    appearance: none;
-    background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6,9 12,15 18,9'%3e%3c/polyline%3e%3c/svg%3e");
-    background-repeat: no-repeat;
-    background-position: right 8px center;
-    background-size: 14px;
-    padding-right: 30px;
-}
-
-.currency-select:hover {
-    border-color: #2E86AB;
-    box-shadow: 0 2px 6px rgba(46, 134, 171, 0.15);
-}
-
-.currency-select:focus {
-    outline: none;
-    border-color: #2E86AB;
-    box-shadow: 0 0 0 2px rgba(46, 134, 171, 0.1);
-}
-
-/* 當搜索框被聚焦時，調整select的邊框 */
-.currency-search:focus + .currency-select {
-    border-top-color: #2E86AB;
-}
 
 /* 交換箭頭 */
 .exchange-arrow {
@@ -837,4 +770,95 @@ body {
 
 .currency-search-hint.show {
     display: block;
+}
+
+/* 圖表載入進度顯示器 */
+.chart-loading-progress {
+    background: white;
+    border: 1px solid #dce4ec;
+    border-radius: 8px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    margin-bottom: 16px;
+    overflow: hidden;
+    animation: slideIn 0.3s ease-out;
+}
+
+.progress-header {
+    background: linear-gradient(135deg, #2E86AB 0%, #A23B72 100%);
+    color: white;
+    padding: 16px 20px;
+    text-align: center;
+}
+
+.progress-header h4 {
+    margin: 0 0 8px 0;
+    font-size: 1.1rem;
+    font-weight: 600;
+}
+
+.progress-header p {
+    margin: 0;
+    font-size: 0.9rem;
+    opacity: 0.9;
+}
+
+.progress-list {
+    padding: 16px 20px;
+}
+
+.progress-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 0;
+    border-bottom: 1px solid #f1f3f4;
+    transition: all 0.3s ease;
+}
+
+.progress-item:last-child {
+    border-bottom: none;
+}
+
+.progress-icon {
+    font-size: 1.2rem;
+    margin-right: 12px;
+    min-width: 24px;
+    text-align: center;
+}
+
+.progress-text {
+    flex: 1;
+    font-weight: 500;
+    color: #495057;
+}
+
+.progress-status {
+    font-size: 0.85rem;
+    color: #6c757d;
+    font-weight: 500;
+}
+
+.progress-item[style*="color: #28a745"] .progress-status {
+    color: #28a745;
+    font-weight: 600;
+}
+
+.progress-item[style*="color: #dc3545"] .progress-status {
+    color: #dc3545;
+    font-weight: 600;
+}
+
+/* 載入進度動畫 */
+@keyframes progressPulse {
+    0% { opacity: 1; }
+    50% { opacity: 0.7; }
+    100% { opacity: 1; }
+}
+
+.progress-item .progress-icon {
+    transition: all 0.3s ease;
+}
+
+.progress-item:not([style*="color:"]) .progress-icon {
+    animation: progressPulse 1.5s ease-in-out infinite;
 } 
