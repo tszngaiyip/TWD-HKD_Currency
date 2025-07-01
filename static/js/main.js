@@ -155,7 +155,7 @@ function showCircleProgress() {
     periods.forEach(period => {
         const progressItem = document.getElementById(`progress-item-${period}`);
         if (progressItem) {
-            progressItem.style.display = 'inline-flex';
+            progressItem.classList.remove('hidden');
         }
     });
     
@@ -171,7 +171,7 @@ function hideCircleProgress() {
     periods.forEach(period => {
         const progressItem = document.getElementById(`progress-item-${period}`);
         if (progressItem) {
-            progressItem.style.display = 'none';
+            progressItem.classList.add('hidden');
         }
     });
 }
@@ -647,21 +647,34 @@ function swapCurrencies() {
 
     const fromSelect = document.getElementById('from-currency');
     const toSelect = document.getElementById('to-currency');
+    const fromInput = document.getElementById('from-currency-input');
+    const toInput = document.getElementById('to-currency-input');
 
     const fromValue = fromSelect.value;
     const toValue = toSelect.value;
 
+    // 交換底層 select 的值
     fromSelect.value = toValue;
     toSelect.value = fromValue;
 
-    currentFromCurrency = toValue;
-    currentToCurrency = fromValue;
+    // 更新全局貨幣狀態
+    currentFromCurrency = fromSelect.value;
+    currentToCurrency = toSelect.value;
 
-    updateCurrencyDisplay('from-currency');
-    updateCurrencyDisplay('to-currency');
+    // 手動更新顯示的 input 值，確保與 select 同步
+    const fromOption = fromSelect.options[fromSelect.selectedIndex];
+    const toOption = toSelect.options[toSelect.selectedIndex];
 
+    if (fromOption && fromInput) {
+        fromInput.value = fromOption.textContent;
+    }
+    if (toOption && toInput) {
+        toInput.value = toOption.textContent;
+    }
+
+    // 觸發後續更新
     updateDisplay();
-    loadLatestRate(); // 新增：交換後立即更新最新匯率
+    loadLatestRate();
 
     setTimeout(() => {
         isSwapping = false;
