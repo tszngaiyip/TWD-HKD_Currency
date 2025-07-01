@@ -25,6 +25,23 @@
                             <button class="period-btn" data-period="90">近3個月</button>
                             <button class="period-btn" data-period="180">近6個月</button>
                         </div>
+                        <!-- 圓形進度條 -->
+                        <div class="progress-item" id="progress-item-7" style="display: none;">
+                            <canvas id="progress-canvas-7" class="progress-canvas" width="80" height="80"></canvas>
+                            <div class="progress-label">近1週</div>
+                        </div>
+                        <div class="progress-item" id="progress-item-30" style="display: none;">
+                            <canvas id="progress-canvas-30" class="progress-canvas" width="80" height="80"></canvas>
+                            <div class="progress-label">近1個月</div>
+                        </div>
+                        <div class="progress-item" id="progress-item-90" style="display: none;">
+                            <canvas id="progress-canvas-90" class="progress-canvas" width="80" height="80"></canvas>
+                            <div class="progress-label">近3個月</div>
+                        </div>
+                        <div class="progress-item" id="progress-item-180" style="display: none;">
+                            <canvas id="progress-canvas-180" class="progress-canvas" width="80" height="80"></canvas>
+                            <div class="progress-label">近6個月</div>
+                        </div>
                         <div class="action-buttons">
                             <button class="status-btn" onclick="checkDataStatus()">📊 數據狀態</button>
                             <button class="status-btn" onclick="checkCacheStatus()">🗂️ 緩存狀態</button>
@@ -379,7 +396,12 @@
                             </div>
                         </div>
                     </div>
-                    
+
+                    <div class="currency-selector-footer">
+                        <button id="confirm-currency-btn" class="confirm-btn" style="display: none;">確認變更</button>
+                    </div>
+
+                    <!-- 使用提示 -->
                     <div class="currency-notice">
                         <small>💡 點擊箭頭可交換貨幣</small>
                     </div>

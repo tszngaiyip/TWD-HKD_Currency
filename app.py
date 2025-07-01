@@ -19,6 +19,28 @@ import concurrent.futures
 
 app = Flask(__name__)
 
+# 速率限制器類別
+class RateLimiter:
+    def __init__(self, max_requests_per_second):
+        self.max_requests_per_second = max_requests_per_second
+        self.min_interval = 1.0 / max_requests_per_second
+        self.last_request_time = 0
+        self.lock = Lock()
+    
+    def wait_if_needed(self):
+        """如果需要的話，等待以符合速率限制"""
+        with self.lock:
+            current_time = time.time()
+            time_since_last = current_time - self.last_request_time
+            
+            if time_since_last < self.min_interval:
+                sleep_time = self.min_interval - time_since_last
+                time.sleep(sleep_time)
+            
+            self.last_request_time = time.time()
+
+rate_limiter = RateLimiter(max_requests_per_second=8)
+
 # 設定中文字體
 import matplotlib.font_manager as fm
 
@@ -134,22 +156,24 @@ class ExchangeRateManager:
             'transaction_currency': from_currency,
             'cardholder_billing_currency': to_currency,
             'bank_fee': '0',
-            'transaction_amount': '10000'
+            'transaction_amount': '1'
         }
         
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) Gecko/20100101 Firefox/140.0",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
             "Accept": "*/*",
-            "Accept-Language": "zh-TW,zh-HK;q=0.8,zh;q=0.6,en-US;q=0.4,en;q=0.2",
-            "Sec-GPC": "1",
+            "Accept-Language": "zh-TW,zh;q=0.9",
+            "Sec-Ch-Ua": "\"Google Chrome\";v=\"137\", \"Chromium\";v=\"137\", \"Not/A)Brand\";v=\"24\"",
+            "Sec-Ch-Ua-Mobile": "?0",
+            "Sec-Ch-Ua-Platform": "\"Windows\"",
             "Sec-Fetch-Dest": "empty",
             "Sec-Fetch-Mode": "cors",
             "Sec-Fetch-Site": "same-origin",
-            "Priority": "u=0",
             "Referer": "https://www.mastercard.com/us/en/personal/get-support/currency-exchange-rate-converter.html"
         }
         
         try:
+            rate_limiter.wait_if_needed()
             response = requests.get(url, params=params, headers=headers, 
                                   timeout=(5, 15))  # 連接超時5秒，讀取超時15秒
             response.raise_for_status()
@@ -220,7 +244,7 @@ class ExchangeRateManager:
         
         return updated_count
     
-    def _fetch_single_rate(self, date, from_currency, to_currency, max_retries=3):
+    def _fetch_single_rate(self, date, from_currency, to_currency, max_retries=1):
         """獲取單一日期的匯率數據（用於並行查詢，含重試機制）"""
         date_str = date.strftime('%Y-%m-%d')
         
@@ -264,8 +288,8 @@ class ExchangeRateManager:
         
         return date_str, None
 
-    def get_live_rates_for_period(self, days, from_currency='TWD', to_currency='HKD', max_workers=5):
-        """獲取指定期間的即時匯率數據（並行查詢版本）"""
+    def get_live_rates_for_period(self, days, from_currency='TWD', to_currency='HKD', max_workers=2):
+        """獲取指定期間的即時匯率數據（並行查詢版本，已加入速率限制）"""
         end_date = datetime.now()
         start_date = end_date - timedelta(days=days)
         
@@ -280,9 +304,6 @@ class ExchangeRateManager:
             current_date += timedelta(days=1)
         
         actual_workers = min(max_workers, len(query_dates))
-        
-        print(f"🚀 並行獲取 {from_currency} ⇒ {to_currency} 近{days}天的即時匯率數據...")
-        print(f"📊 需要查詢 {len(query_dates)} 個工作日，使用 {actual_workers} 個並行線程")
         
         rates_data = {}
         successful_queries = 0
@@ -365,26 +386,22 @@ class ExchangeRateManager:
         if days <= 7:
             # 每天顯示一個刻度
             ax.set_xticks(dates)
-            ax.set_xticklabels([date.strftime('%m/%d') for date in dates], 
-                             rotation=45, ha='right', va='top')
+            ax.set_xticklabels([date.strftime('%m/%d') for date in dates])
         elif days <= 30:
             # 每2天顯示一個刻度
             tick_dates = dates[::2]
             ax.set_xticks(tick_dates)
-            ax.set_xticklabels([date.strftime('%m/%d') for date in tick_dates], 
-                             rotation=45, ha='right', va='top')
+            ax.set_xticklabels([date.strftime('%m/%d') for date in tick_dates])
         elif days <= 90:
             # 每週顯示2-3個刻度
             tick_dates = dates[::len(dates)//10] if len(dates) > 10 else dates[::2]
             ax.set_xticks(tick_dates)
-            ax.set_xticklabels([date.strftime('%m/%d') for date in tick_dates], 
-                             rotation=45, ha='right', va='top')
+            ax.set_xticklabels([date.strftime('%m/%d') for date in tick_dates])
         else:
             # 每週顯示1-2個刻度
             tick_dates = dates[::len(dates)//15] if len(dates) > 15 else dates[::3]
             ax.set_xticks(tick_dates)
-            ax.set_xticklabels([date.strftime('%m/%d') for date in tick_dates], 
-                             rotation=45, ha='right', va='top')
+            ax.set_xticklabels([date.strftime('%m/%d') for date in tick_dates])
         
         # 調整X軸刻度的間距
         ax.tick_params(axis='x', which='major', pad=8)
@@ -411,54 +428,43 @@ class ExchangeRateManager:
                 ax.set_ylim(y_min - y_range * 0.05, y_max + y_range * 0.12)
         
         # 根據期間決定標籤顯示策略
-        if len(dates) <= 14:
-            # 數據點少時，顯示所有數值標籤
-            for date, rate in zip(dates, rates):
-                ax.annotate(f'{rate:.3f}', 
-                           (date, rate), 
-                           textcoords="offset points", 
-                           xytext=(0,10), 
-                           ha='center',
-                           va='bottom',
-                           fontsize=8)
-        elif days >= 30:
-            # 1個月以上的圖表，只標記最高點和最低點
-            if rates:
-                max_rate = max(rates)
-                min_rate = min(rates)
-                max_index = rates.index(max_rate)
-                min_index = rates.index(min_rate)
-                
-                # 標記最高點
-                ax.annotate(f'{max_rate:.3f}', 
-                           (dates[max_index], max_rate), 
-                           textcoords="offset points", 
-                           xytext=(0,10), 
-                           ha='center',
-                           va='bottom',
-                           fontsize=9,
-                           color='red',
-                           fontweight='bold',
-                           bbox=dict(boxstyle="round", facecolor='white', alpha=0.6, edgecolor='none'))
-                
-                # 標記最低點
-                ax.annotate(f'{min_rate:.3f}', 
-                           (dates[min_index], min_rate), 
-                           textcoords="offset points", 
-                           xytext=(0,10), 
-                           ha='center',
-                           va='bottom',
-                           fontsize=9,
-                           color='green',
-                           fontweight='bold',
-                           bbox=dict(boxstyle="round", facecolor='white', alpha=0.6, edgecolor='none'))
+        # 所有圖表統一標記最高點和最低點
+        if rates:
+            max_rate = max(rates)
+            min_rate = min(rates)
+            max_index = rates.index(max_rate)
+            min_index = rates.index(min_rate)
+            
+            # 標記最高點
+            ax.annotate(f'{max_rate:.3f}', 
+                       (dates[max_index], max_rate), 
+                       textcoords="offset points", 
+                       xytext=(0,10), 
+                       ha='center',
+                       va='bottom',
+                       fontsize=9,
+                       color='red',
+                       fontweight='bold',
+                       bbox=dict(boxstyle="round", facecolor='white', alpha=0.6, edgecolor='none'))
+            
+            # 標記最低點
+            ax.annotate(f'{min_rate:.3f}', 
+                       (dates[min_index], min_rate), 
+                       textcoords="offset points", 
+                       xytext=(0,10), 
+                       ha='center',
+                       va='bottom',
+                       fontsize=9,
+                       color='green',
+                       fontweight='bold',
+                       bbox=dict(boxstyle="round", facecolor='white', alpha=0.6, edgecolor='none'))
         
-        # 調整佈局
-        plt.tight_layout()
+        # 手動調整佈局，避免使用不穩定的 tight_layout
+        fig.subplots_adjust(left=0.08, right=0.95, top=0.85, bottom=0.15)
         
         # 轉換為base64字符串
         img_buffer = io.BytesIO()
-        plt.savefig(img_buffer, format='png', dpi=300, bbox_inches='tight')
+        plt.savefig(img_buffer, format='png', dpi=300)
         img_buffer.seek(0)
         img_base64 = base64.b64encode(img_buffer.getvalue()).decode()
         plt.close(fig)
@@ -509,26 +515,22 @@ class ExchangeRateManager:
         if days <= 7:
             # 每天顯示一個刻度
             ax.set_xticks(date_objects)
-            ax.set_xticklabels([date.strftime('%m/%d') for date in date_objects], 
-                             rotation=45, ha='right', va='top')
+            ax.set_xticklabels([date.strftime('%m/%d') for date in date_objects])
         elif days <= 30:
             # 每2天顯示一個刻度
             tick_dates = date_objects[::2]
             ax.set_xticks(tick_dates)
-            ax.set_xticklabels([date.strftime('%m/%d') for date in tick_dates], 
-                             rotation=45, ha='right', va='top')
+            ax.set_xticklabels([date.strftime('%m/%d') for date in tick_dates])
         elif days <= 90:
             # 每週顯示2-3個刻度
             tick_dates = date_objects[::len(date_objects)//10] if len(date_objects) > 10 else date_objects[::2]
             ax.set_xticks(tick_dates)
-            ax.set_xticklabels([date.strftime('%m/%d') for date in tick_dates], 
-                             rotation=45, ha='right', va='top')
+            ax.set_xticklabels([date.strftime('%m/%d') for date in tick_dates])
         else:
             # 每週顯示1-2個刻度
             tick_dates = date_objects[::len(date_objects)//15] if len(date_objects) > 15 else date_objects[::3]
             ax.set_xticks(tick_dates)
-            ax.set_xticklabels([date.strftime('%m/%d') for date in tick_dates], 
-                             rotation=45, ha='right', va='top')
+            ax.set_xticklabels([date.strftime('%m/%d') for date in tick_dates])
         
         # 調整X軸刻度的間距
         ax.tick_params(axis='x', which='major', pad=8)
@@ -554,55 +556,44 @@ class ExchangeRateManager:
                 # 短期圖表為圖例留出空間
                 ax.set_ylim(y_min - y_range * 0.05, y_max + y_range * 0.12)
         
-        # 根據期間決定標籤顯示策略 - 與 create_chart 保持一致
-        if len(date_objects) <= 14:
-            # 數據點少時，顯示所有數值標籤
-            for date, rate in zip(date_objects, rates):
-                ax.annotate(f'{rate:.3f}', 
-                           (date, rate), 
-                           textcoords="offset points", 
-                           xytext=(0,10), 
-                           ha='center',
-                           va='bottom',
-                           fontsize=8)
-        elif days >= 30:
-            # 1個月以上的圖表，只標記最高點和最低點
-            if rates:
-                max_rate = max(rates)
-                min_rate = min(rates)
-                max_index = rates.index(max_rate)
-                min_index = rates.index(min_rate)
-                
-                # 標記最高點
-                ax.annotate(f'{max_rate:.3f}', 
-                           (date_objects[max_index], max_rate), 
-                           textcoords="offset points", 
-                           xytext=(0,10), 
-                           ha='center',
-                           va='bottom',
-                           fontsize=9,
-                           color='red',
-                           fontweight='bold',
-                           bbox=dict(boxstyle="round", facecolor='white', alpha=0.6, edgecolor='none'))
-                
-                # 標記最低點
-                ax.annotate(f'{min_rate:.3f}', 
-                           (date_objects[min_index], min_rate), 
-                           textcoords="offset points", 
-                           xytext=(0,10), 
-                           ha='center',
-                           va='bottom',
-                           fontsize=9,
-                           color='green',
-                           fontweight='bold',
-                           bbox=dict(boxstyle="round", facecolor='white', alpha=0.6, edgecolor='none'))
+        # 根據期間決定標籤顯示策略
+        # 所有圖表統一標記最高點和最低點
+        if rates:
+            max_rate = max(rates)
+            min_rate = min(rates)
+            max_index = rates.index(max_rate)
+            min_index = rates.index(min_rate)
+            
+            # 標記最高點
+            ax.annotate(f'{max_rate:.3f}', 
+                       (date_objects[max_index], max_rate), 
+                       textcoords="offset points", 
+                       xytext=(0,10), 
+                       ha='center',
+                       va='bottom',
+                       fontsize=9,
+                       color='red',
+                       fontweight='bold',
+                       bbox=dict(boxstyle="round", facecolor='white', alpha=0.6, edgecolor='none'))
+            
+            # 標記最低點
+            ax.annotate(f'{min_rate:.3f}', 
+                       (date_objects[min_index], min_rate), 
+                       textcoords="offset points", 
+                       xytext=(0,10), 
+                       ha='center',
+                       va='bottom',
+                       fontsize=9,
+                       color='green',
+                       fontweight='bold',
+                       bbox=dict(boxstyle="round", facecolor='white', alpha=0.6, edgecolor='none'))
         
-        # 調整佈局
-        plt.tight_layout()
+        # 手動調整佈局，避免使用不穩定的 tight_layout
+        fig.subplots_adjust(left=0.08, right=0.95, top=0.9, bottom=0.1)
         
         # 轉換為base64字符串 - 與 create_chart 保持一致的DPI
         img_buffer = io.BytesIO()
-        plt.savefig(img_buffer, format='png', dpi=300, bbox_inches='tight')
+        plt.savefig(img_buffer, format='png', dpi=300)
         img_buffer.seek(0)
         img_base64 = base64.b64encode(img_buffer.getvalue()).decode()
         plt.close(fig)
@@ -618,18 +609,176 @@ class ExchangeRateManager:
         
         return img_base64, stats
     
+    def create_chart_from_data(self, days, all_dates, all_rates):
+        """從已準備好的數據創建圖表（避免重複數據查詢）"""
+        if not all_dates or not all_rates:
+            return None
+        
+        # 從完整數據中提取指定天數的子集
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=days)
+        
+        # 過濾出指定時間範圍的數據
+        filtered_dates = []
+        filtered_rates = []
+        
+        for date, rate in zip(all_dates, all_rates):
+            if start_date <= date <= end_date:
+                filtered_dates.append(date)
+                filtered_rates.append(rate)
+        
+        if not filtered_dates:
+            return None
+        
+        # 清除之前的圖表
+        plt.clf()
+        
+        # 創建圖表
+        fig, ax = plt.subplots(figsize=(12, 6))
+        ax.plot(filtered_dates, filtered_rates, marker='o', linewidth=2, markersize=4, color='#2E86AB')
+        
+        # 設定標題
+        period_names = {7: '近1週', 30: '近1個月', 90: '近3個月', 180: '近6個月'}
+        title = f'HKD 到 TWD 匯率走勢圖 ({period_names.get(days, f"近{days}天")})'
+        ax.set_title(title, fontsize=16, fontweight='bold', pad=20)
+        ax.set_xlabel('日期', fontsize=12)
+        ax.set_ylabel('匯率', fontsize=12)
+        
+        # 手動設置X軸刻度，確保與數據點對齊
+        if days <= 7:
+            # 每天顯示一個刻度
+            ax.set_xticks(filtered_dates)
+            ax.set_xticklabels([date.strftime('%m/%d') for date in filtered_dates])
+        elif days <= 30:
+            # 每2天顯示一個刻度
+            tick_dates = filtered_dates[::2]
+            ax.set_xticks(tick_dates)
+            ax.set_xticklabels([date.strftime('%m/%d') for date in tick_dates])
+        elif days <= 90:
+            # 每週顯示2-3個刻度
+            tick_dates = filtered_dates[::len(filtered_dates)//10] if len(filtered_dates) > 10 else filtered_dates[::2]
+            ax.set_xticks(tick_dates)
+            ax.set_xticklabels([date.strftime('%m/%d') for date in tick_dates])
+        else:
+            # 每週顯示1-2個刻度
+            tick_dates = filtered_dates[::len(filtered_dates)//15] if len(filtered_dates) > 15 else filtered_dates[::3]
+            ax.set_xticks(tick_dates)
+            ax.set_xticklabels([date.strftime('%m/%d') for date in tick_dates])
+        
+        # 調整X軸刻度的間距
+        ax.tick_params(axis='x', which='major', pad=8)
+        
+        # 添加網格
+        ax.grid(True, alpha=0.3)
+        
+        # 添加平均線
+        if filtered_rates:
+            avg_rate = sum(filtered_rates) / len(filtered_rates)
+            ax.axhline(y=avg_rate, color='orange', linestyle='--', linewidth=1.5, alpha=0.8, label=f'平均值: {avg_rate:.3f}')
+            ax.legend(loc='upper right', fontsize=10)
+        
+        # 設定 Y 軸範圍，為標籤和圖例留出空間
+        if filtered_rates:
+            y_min, y_max = min(filtered_rates), max(filtered_rates)
+            y_range = y_max - y_min
+            # 根據期間調整邊距，為標籤和圖例留出空間
+            if days >= 30:
+                # 長期圖表統一在上方顯示最高最低點標籤，並為圖例留空間
+                ax.set_ylim(y_min - y_range * 0.05, y_max + y_range * 0.15)
+            else:
+                # 短期圖表為圖例留出空間
+                ax.set_ylim(y_min - y_range * 0.05, y_max + y_range * 0.12)
+        
+        # 根據期間決定標籤顯示策略
+        # 所有圖表統一標記最高點和最低點
+        if filtered_rates:
+            max_rate = max(filtered_rates)
+            min_rate = min(filtered_rates)
+            max_index = filtered_rates.index(max_rate)
+            min_index = filtered_rates.index(min_rate)
+            
+            # 標記最高點
+            ax.annotate(f'{max_rate:.3f}', 
+                       (filtered_dates[max_index], max_rate), 
+                       textcoords="offset points", 
+                       xytext=(0,10), 
+                       ha='center',
+                       va='bottom',
+                       fontsize=9,
+                       color='red',
+                       fontweight='bold',
+                       bbox=dict(boxstyle="round", facecolor='white', alpha=0.6, edgecolor='none'))
+            
+            # 標記最低點
+            ax.annotate(f'{min_rate:.3f}', 
+                       (filtered_dates[min_index], min_rate), 
+                       textcoords="offset points", 
+                       xytext=(0,10), 
+                       ha='center',
+                       va='bottom',
+                       fontsize=9,
+                       color='green',
+                       fontweight='bold',
+                       bbox=dict(boxstyle="round", facecolor='white', alpha=0.6, edgecolor='none'))
+        
+        # 手動調整佈局，避免使用不穩定的 tight_layout
+        fig.subplots_adjust(left=0.08, right=0.95, top=0.9, bottom=0.1)
+        
+        # 轉換為base64字符串
+        img_buffer = io.BytesIO()
+        plt.savefig(img_buffer, format='png', dpi=300)
+        img_buffer.seek(0)
+        img_base64 = base64.b64encode(img_buffer.getvalue()).decode()
+        plt.close(fig)
+        
+        # 計算統計信息
+        stats = {
+            'max_rate': max(filtered_rates),
+            'min_rate': min(filtered_rates),
+            'avg_rate': sum(filtered_rates) / len(filtered_rates),
+            'data_points': len(filtered_rates),
+            'date_range': f"{filtered_dates[0].strftime('%Y-%m-%d')} 至 {filtered_dates[-1].strftime('%Y-%m-%d')}"
+        } if filtered_rates else None
+        
+        return img_base64, stats
+
     def pregenerate_all_charts(self):
-        """預生成所有期間的圖表"""
+        """預生成所有期間的圖表（優化版2：邊取數據邊生圖，提升使用者體驗）"""
         periods = [7, 30, 90, 180]
         print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 開始預生成圖表...")
         
+        # 檢查哪些圖表需要更新
+        needed_periods = []
         for period in periods:
+            is_valid = self.is_cache_valid(period)
+            if not is_valid:
+                needed_periods.append(period)
+
+        if not needed_periods:
+            print("✅ 所有圖表緩存都有效，無需重新生成")
+            return
+        
+        # 獲取最長需要的時間範圍數據
+        max_needed_period = max(needed_periods)
+        print(f"📊 正在獲取數據範圍（{max_needed_period}天）...")
+        all_dates, all_rates = self.get_rates_for_period(max_needed_period)
+        
+        if not all_dates:
+            print("❌ 無法獲取數據，跳過圖表生成")
+            return
+            
+        print(f"✅ 成功獲取 {len(all_dates)} 個數據點")
+        
+        # 按時間週期從短到長生成圖表（讓使用者更快看到短期圖表）
+        needed_periods.sort()
+        
+        for period in needed_periods:
             try:
-                # 檢查緩存是否有效
-                is_valid, reason = self.is_cache_valid(period)
-                if is_valid:
-                    continue               
-                chart_data = self.create_chart(period)
+                print(f"  🔄 正在生成近{period}天圖表...")
+                
+                # 使用優化版本的圖表生成方法，重用已獲取的數據
+                chart_data = self.create_chart_from_data(period, all_dates, all_rates)
+                
                 if chart_data:
                     img_base64, stats = chart_data
                     
@@ -644,6 +793,8 @@ class ExchangeRateManager:
                             'data_fingerprint': data_fingerprint,
                             'data_count': data_count
                         }
+                    
+                    print(f"  ✅ 近{period}天圖表生成完成 (數據點: {stats['data_points']})")
                 else:
                     print(f"  ❌ 近{period}天圖表生成失敗")
             except Exception as e:
@@ -780,7 +931,6 @@ def get_chart():
                 })
         
         # 需要重新生成預設貨幣對圖表
-        print(f"🔄 需要重新生成近{days}天圖表 (TWD ⇒ HKD): {reason}")
         chart_data = rate_manager.create_chart(days)
         
         if chart_data is None:
@@ -800,21 +950,16 @@ def get_chart():
                 'data_count': data_count
             }
         
-        print(f"✅ 近{days}天圖表生成完成 (TWD ⇒ HKD, 數據點:{data_count})")
-        
         return jsonify({
             'chart': img_base64,
             'stats': stats,
             'from_cache': False,
-            'cache_reason': reason,
             'generated_at': datetime.now().isoformat(),
             'data_count': data_count
         })
     
     else:
         # 非預設貨幣對使用即時生成
-        print(f"🔄 即時生成 {from_currency} ⇒ {to_currency} 近{days}天圖表（無緩存）")
-        
         try:
             chart_data = rate_manager.create_live_chart(days, from_currency, to_currency)
             
@@ -823,7 +968,6 @@ def get_chart():
             
             img_base64, stats = chart_data
             
-            print(f"✅ {from_currency} ⇒ {to_currency} 近{days}天圖表生成完成 (數據點:{stats['data_points']})")
             
             return jsonify({
                 'chart': img_base64,
@@ -928,7 +1072,6 @@ def get_latest_rate():
             while current_date.weekday() >= 5:  # Saturday=5, Sunday=6
                 current_date -= timedelta(days=1)
             
-            print(f"🔄 獲取 {from_currency} ⇒ {to_currency} 即時匯率...")
             
             rate_data = rate_manager.get_exchange_rate(current_date, from_currency, to_currency)
             
@@ -1020,17 +1163,16 @@ def get_chart_cache_status():
             
             with chart_cache_lock:
                 if period in chart_cache:
-                    cached_info = chart_cache[period]
                     cache_info[period] = {
                         'period_name': period_names[period],
                         'cached': True,
                         'is_valid': is_valid,
                         'validity_reason': reason,
-                        'generated_at': cached_info['generated_at'],
-                        'data_fingerprint': cached_info.get('data_fingerprint', 'N/A'),
-                        'data_count': cached_info.get('data_count', 0),
-                        'has_stats': cached_info['stats'] is not None,
-                        'cache_age_hours': (datetime.now() - datetime.fromisoformat(cached_info['generated_at'])).total_seconds() / 3600
+                        'generated_at': chart_cache[period]['generated_at'],
+                        'data_fingerprint': chart_cache[period].get('data_fingerprint', 'N/A'),
+                        'data_count': chart_cache[period].get('data_count', 0),
+                        'has_stats': chart_cache[period]['stats'] is not None,
+                        'cache_age_hours': (datetime.now() - datetime.fromisoformat(chart_cache[period]['generated_at'])).total_seconds() / 3600
                     }
                 else:
                     cache_info[period] = {
@@ -1183,7 +1325,6 @@ def regenerate_chart():
         
         return jsonify({
             'success': True,
-            'message': f'近{days}天圖表已重新生成',
             'chart': img_base64,
             'stats': stats,
             'data_count': data_count,
