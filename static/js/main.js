@@ -1450,52 +1450,21 @@ function autoRefreshContent(updateData) {
 }
 
 function showAutoUpdateNotification(updateData) {
-    // 創建自動更新提示
-    const notification = document.createElement('div');
-    notification.className = 'auto-update-notification';
+    const notification = document.getElementById('auto-update-notification');
+    const messageElement = notification.querySelector('.notification-message');
     
-    const updateTime = updateData ? new Date(updateData.updated_time).toLocaleTimeString('zh-TW') : '';
-    const message = updateData ? updateData.message : '資料已自動更新';
-    
-    notification.innerHTML = `
-        <div style="
-            position: fixed;
-            top: 20px;
-            right: 20px;
-            background: #28a745;
-            color: white;
-            padding: 12px 20px;
-            border-radius: 8px;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-            z-index: 1000;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            font-size: 14px;
-            animation: slideInRight 0.3s ease-out;
-            max-width: 300px;
-        ">
-            <span>📡</span>
-            <div>
-                <div style="font-weight: bold;">服務器推送更新</div>
-                <div style="font-size: 12px; opacity: 0.9; margin-top: 2px;">
-                    ${updateTime && `${updateTime} - `}${message}
-                </div>
-            </div>
-        </div>
+    messageElement.innerHTML = `
+        <strong>數據已自動更新！</strong><br>
+        ${updateData.message}<br>
+        最新匯率 (1 HKD): <strong>${updateData.rate.toFixed(4)} TWD</strong>
     `;
     
-    document.body.appendChild(notification);
+    notification.classList.add('show');
     
-    // 4秒後移除提示
+    // 3秒後開始淡出
     setTimeout(() => {
-        if (notification.parentNode) {
-            notification.style.animation = 'slideOutRight 0.3s ease-out';
-            setTimeout(() => {
-                notification.remove();
-            }, 300);
-        }
-    }, 4000);
+        notification.classList.remove('show');
+    }, 5000);
 }
 
 // 添加CSS動畫樣式
@@ -1773,34 +1742,24 @@ function checkLRUCacheStatus() {
 
 // 新增：設定互動按鈕的鎖定狀態
 function updateInteractionStates() {
-    const swapButton = document.querySelector('.exchange-arrow');
-    const confirmBtn = document.getElementById('confirm-currency-btn');
+    const isDefault = (currentFromCurrency === 'TWD' && currentToCurrency === 'HKD');
+    
+    // 控制期間按鈕的啟用/禁用
+    document.querySelectorAll('.period-btn').forEach(btn => {
+        btn.disabled = isLoadingAllCharts || isSingleChartLoading;
+    });
 
-    const isLoading = isLoadingAllCharts || isSingleChartLoading;
-    const hasPendingChanges = pendingFromCurrency !== null || pendingToCurrency !== null;
-
-    // --- Swap Button State ---
-    const isSwapLocked = isLoading || hasPendingChanges;
-    if (swapButton) {
-        swapButton.style.opacity = isSwapLocked ? '0.5' : '1';
-        swapButton.style.cursor = isSwapLocked ? 'not-allowed' : 'pointer';
-        swapButton.style.pointerEvents = isSwapLocked ? 'none' : 'auto';
-        if (isLoading) {
-            swapButton.title = '正在載入圖表，請稍候...';
-        } else if (hasPendingChanges) {
-            swapButton.title = '請先確認變更';
+    // 控制貨幣選擇器
+    document.querySelectorAll('.currency-search-wrapper').forEach(wrapper => {
+        if (isLoadingAllCharts || isSingleChartLoading) {
+            wrapper.classList.add('disabled');
         } else {
-            swapButton.title = '點擊交換貨幣';
+            wrapper.classList.remove('disabled');
         }
-    }
+    });
 
-    // --- Confirm Button State ---
-    // The button is only visible when hasPendingChanges is true.
-    // So we only need to lock it based on loading state.
-    if (confirmBtn) {
-        confirmBtn.disabled = isLoading;
-        confirmBtn.style.opacity = isLoading ? '0.5' : '1';
-        confirmBtn.style.cursor = isLoading ? 'not-allowed' : 'pointer';
-        confirmBtn.style.pointerEvents = isLoading ? 'none' : 'auto';
-    }
+    // 控制狀態按鈕
+    document.querySelectorAll('.status-btn').forEach(btn => {
+        btn.disabled = isLoadingAllCharts || isSingleChartLoading;
+    });
 }

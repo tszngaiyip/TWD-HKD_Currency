@@ -54,6 +54,7 @@ body {
     flex: 1;
     min-height: 0;
     overflow: hidden;
+    transition: all 0.3s ease-in-out;
 }
 
 /* 左側內容區 */
@@ -62,6 +63,7 @@ body {
     flex-direction: column;
     gap: 10px;
     min-height: 0;
+    transition: all 0.3s ease-in-out;
 }
 
 /* 右側面板 */
@@ -71,6 +73,7 @@ body {
     gap: 12px;
     overflow-y: auto;
     padding-right: 4px;
+    transition: all 0.3s ease-in-out;
 }
 
 /* 貨幣選擇器 - 重新設計為右側面板樣式 */

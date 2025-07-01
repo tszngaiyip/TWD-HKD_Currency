@@ -78,6 +78,10 @@ chart_cache_lock = Lock()
 class ExchangeRateManager:
     def __init__(self):
         self.data = self.load_data()
+        self._network_paused = False
+        self._pause_until = 0
+        self._pause_lock = Lock()
+        self._pause_message_printed = False
     
     def load_data(self):
         """載入本地數據"""
@@ -149,6 +153,19 @@ class ExchangeRateManager:
     
     def get_exchange_rate(self, date, from_currency='TWD', to_currency='HKD'):
         """獲取指定日期的匯率"""
+        with self._pause_lock:
+            if self._network_paused:
+                if time.time() < self._pause_until:
+                    if not self._pause_message_printed:
+                        print(f"⏸️ 網路請求已暫停，將於 {datetime.fromtimestamp(self._pause_until).strftime('%H:%M:%S')} 恢復。")
+                        self._pause_message_printed = True
+                    return None
+                else:
+                    self._network_paused = False
+                    self._pause_until = 0
+                    self._pause_message_printed = False
+                    print("🟢 網路請求暫停已解除，嘗試恢復。")
+
         url = "https://www.mastercard.com/marketingservices/public/mccom-services/currency-conversions/conversion-rates"
         
         params = {
@@ -179,11 +196,18 @@ class ExchangeRateManager:
             response.raise_for_status()
             data = response.json()
             return data
-        except requests.exceptions.Timeout as e:
-            print(f"獲取 {date.strftime('%Y-%m-%d')} 數據時超時: {e}")
-            return None
         except requests.exceptions.RequestException as e:
-            print(f"獲取 {date.strftime('%Y-%m-%d')} 數據時網路錯誤: {e}")
+            # 觸發熔斷機制
+            with self._pause_lock:
+                if not self._network_paused:
+                    pause_duration = 300  # 暫停 5 分鐘
+                    self._network_paused = True
+                    self._pause_until = time.time() + pause_duration
+                    self._pause_message_printed = False
+                    print(f"‼️ 偵測到網路錯誤，所有請求將暫停 {pause_duration // 60} 分鐘。")
+            
+            error_type = "超時" if isinstance(e, requests.exceptions.Timeout) else "網路錯誤"
+            print(f"獲取 {date.strftime('%Y-%m-%d')} 數據時{error_type}: {e}")
             return None
         except Exception as e:
             print(f"獲取 {date.strftime('%Y-%m-%d')} 數據時發生錯誤: {e}")
@@ -255,33 +279,19 @@ class ExchangeRateManager:
                 if data and 'data' in data:
                     conversion_rate = float(data['data']['conversionRate'])
                     return date_str, conversion_rate
+                
+                # 如果 get_exchange_rate 回傳 None (網路暫停或已處理的錯誤)，直接返回
+                if data is None:
+                    return date_str, None
+                
+                # 如果 API 回傳的 JSON 結構不完整，但不是網路錯誤
+                if attempt < max_retries - 1:
+                    print(f"🔄 {date_str}: 無數據，重試 ({attempt + 1}/{max_retries})")
+                    time.sleep(1)  # 等待1秒後重試
+                    continue
                 else:
-                    if attempt < max_retries - 1:
-                        print(f"🔄 {date_str}: 無數據，重試 ({attempt + 1}/{max_retries})")
-                        time.sleep(1)  # 等待1秒後重試
-                        continue
-                    else:
-                        print(f"❌ {date_str}: 多次重試後仍無法獲取數據")
-                        return date_str, None
+                    return date_str, None
                         
-            except requests.exceptions.Timeout:
-                if attempt < max_retries - 1:
-                    print(f"⏰ {date_str}: 請求超時，重試 ({attempt + 1}/{max_retries})")
-                    time.sleep(2)  # 超時後等待2秒重試
-                    continue
-                else:
-                    print(f"❌ {date_str}: 多次超時後放棄")
-                    return date_str, None
-                    
-            except requests.exceptions.RequestException as e:
-                if attempt < max_retries - 1:
-                    print(f"🌐 {date_str}: 網路錯誤，重試 ({attempt + 1}/{max_retries}) - {e}")
-                    time.sleep(2)
-                    continue
-                else:
-                    print(f"❌ {date_str}: 網路錯誤，多次重試失敗 - {e}")
-                    return date_str, None
-                    
             except Exception as e:
                 print(f"❌ {date_str}: 未知錯誤 - {e}")
                 return date_str, None
@@ -1147,101 +1157,6 @@ def trigger_scheduled_update():
         return jsonify({
             'success': False,
             'message': f'手動觸發定時更新失敗: {str(e)}'
-        }), 500
-
-@app.route('/api/chart_cache_status')
-def get_chart_cache_status():
-    """獲取圖表緩存狀態API - 增強版本"""
-    try:
-        cache_info = {}
-        periods = [7, 30, 90, 180]
-        period_names = {7: '近1週', 30: '近1個月', 90: '近3個月', 180: '近6個月'}
-        
-        for period in periods:
-            # 檢查緩存有效性
-            is_valid, reason = rate_manager.is_cache_valid(period)
-            
-            with chart_cache_lock:
-                if period in chart_cache:
-                    cache_info[period] = {
-                        'period_name': period_names[period],
-                        'cached': True,
-                        'is_valid': is_valid,
-                        'validity_reason': reason,
-                        'generated_at': chart_cache[period]['generated_at'],
-                        'data_fingerprint': chart_cache[period].get('data_fingerprint', 'N/A'),
-                        'data_count': chart_cache[period].get('data_count', 0),
-                        'has_stats': chart_cache[period]['stats'] is not None,
-                        'cache_age_hours': (datetime.now() - datetime.fromisoformat(chart_cache[period]['generated_at'])).total_seconds() / 3600
-                    }
-                else:
-                    cache_info[period] = {
-                        'period_name': period_names[period],
-                        'cached': False,
-                        'is_valid': False,
-                        'validity_reason': '緩存不存在',
-                        'generated_at': None,
-                        'data_fingerprint': None,
-                        'data_count': 0,
-                        'has_stats': False,
-                        'cache_age_hours': 0
-                    }
-        
-        # 計算總體統計
-        total_cached = sum(1 for info in cache_info.values() if info['cached'])
-        valid_cached = sum(1 for info in cache_info.values() if info['is_valid'])
-        
-        return jsonify({
-            'success': True,
-            'cache_info': cache_info,
-            'summary': {
-                'total_periods': len(periods),
-                'total_cached': total_cached,
-                'valid_cached': valid_cached,
-                'cache_efficiency': f"{valid_cached}/{len(periods)} ({valid_cached/len(periods)*100:.1f}%)"
-            },
-            'checked_at': datetime.now().isoformat()
-        })
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'message': f'獲取緩存狀態失敗: {str(e)}'
-        }), 500
-
-@app.route('/api/clear_cache')
-def clear_cache():
-    """清除圖表緩存API"""
-    try:
-        period = request.args.get('period', 'all')
-        
-        with chart_cache_lock:
-            if period == 'all':
-                cleared_count = len(chart_cache)
-                chart_cache.clear()
-                message = f"已清除所有 {cleared_count} 個期間的緩存"
-            else:
-                try:
-                    days = int(period)
-                    if days in chart_cache:
-                        del chart_cache[days]
-                        message = f"已清除近{days}天的緩存"
-                    else:
-                        message = f"近{days}天的緩存不存在"
-                except ValueError:
-                    return jsonify({
-                        'success': False,
-                        'message': '無效的期間參數'
-                    }), 400
-        
-        return jsonify({
-            'success': True,
-            'message': message,
-            'cleared_at': datetime.now().isoformat()
-        })
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'message': f'清除緩存失敗: {str(e)}'
         }), 500
 
 @app.route('/api/force_cleanup_data')
