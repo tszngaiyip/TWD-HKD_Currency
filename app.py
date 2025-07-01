@@ -837,7 +837,7 @@ class ExchangeRateManager:
 
         return img_base64, stats
 
-    def create_chart_from_data(self, days, all_dates, all_rates):
+    def create_chart_from_data(self, days, all_dates, all_rates, from_currency, to_currency):
         """從已準備好的數據創建圖表（避免重複數據查詢）"""
         if not all_dates or not all_rates:
             return None
@@ -867,7 +867,7 @@ class ExchangeRateManager:
 
         # 設定標題
         period_names = {7: '近1週', 30: '近1個月', 90: '近3個月', 180: '近6個月'}
-        title = f'HKD 到 TWD 匯率走勢圖 ({period_names.get(days, f"近{days}天")})'
+        title = f'{to_currency} 到 {from_currency} 匯率走勢圖 ({period_names.get(days, f"近{days}天")})'
         ax.set_title(title, fontsize=16, fontweight='bold', pad=20)
         ax.set_xlabel('日期', fontsize=12)
         ax.set_ylabel('匯率', fontsize=12)
@@ -1005,7 +1005,7 @@ class ExchangeRateManager:
                 print(f"  🔄 正在生成近{period}天圖表...")
 
                 # 使用優化版本的圖表生成方法，重用已獲取的數據
-                chart_data = self.create_chart_from_data(period, all_dates, all_rates)
+                chart_data = self.create_chart_from_data(period, all_dates, all_rates, 'TWD', 'HKD')
 
                 if chart_data:
                     img_base64, stats = chart_data
@@ -1250,7 +1250,7 @@ def index():
 
 @app.route('/api/chart')
 def get_chart():
-    """獲取圖表API - 支援多幣種"""
+    """獲取圖表API - 支援多幣種並統一使用伺服器快取"""
     period = request.args.get('period', '7')
     from_currency = request.args.get('from_currency', 'TWD')
     to_currency = request.args.get('to_currency', 'HKD')
@@ -1259,80 +1259,93 @@ def get_chart():
         days = int(period)
         if days not in [7, 30, 90, 180]:
             days = 7
-    except:
+    except ValueError:
         days = 7
 
-    # 檢查是否為預設貨幣對（只有TWD-HKD才使用緩存）
-    is_default_pair = (from_currency == 'TWD' and to_currency == 'HKD')
+    # 檢查所有相關期間的快取是否存在
+    periods_to_check = [7, 30, 90, 180]
+    cache_keys = {p: f"chart_{from_currency}_{to_currency}_{p}" for p in periods_to_check}
+    
+    # 檢查是否所有圖表都已在快取中
+    all_charts_cached = all(rate_manager.chart_cache.get(key) is not None for key in cache_keys.values())
 
-    if is_default_pair:
-        # 預設貨幣對使用緩存邏輯
-        is_valid, reason = rate_manager.is_cache_valid(days)
-
-        if is_valid:
-            # 從緩存返回
-            with chart_cache_lock:
-                cached_chart = chart_cache[days]
-                return jsonify({
-                    'chart': cached_chart['chart'],
-                    'stats': cached_chart['stats'],
-                    'from_cache': True,
-                    'cache_reason': '緩存有效',
-                    'generated_at': cached_chart['generated_at'],
-                    'data_count': cached_chart.get('data_count', 0)
-                })
-
-        # 需要重新生成預設貨幣對圖表
-        chart_data = rate_manager.create_chart(days)
-
-        if chart_data is None:
-            return jsonify({'error': '無法獲取TWD-HKD數據，請先更新數據'}), 400
-
-        img_base64, stats = chart_data
-
-        # 獲取數據指紋並保存到緩存
-        data_fingerprint, data_count = rate_manager.get_data_fingerprint(days)
-
-        with chart_cache_lock:
-            chart_cache[days] = {
-                'chart': img_base64,
-                'stats': stats,
-                'generated_at': datetime.now().isoformat(),
-                'data_fingerprint': data_fingerprint,
-                'data_count': data_count
-            }
-
-        return jsonify({
-            'chart': img_base64,
-            'stats': stats,
-            'from_cache': False,
-            'generated_at': datetime.now().isoformat(),
-            'data_count': data_count
-        })
-
-    else:
-        # 非預設貨幣對使用即時生成
-        try:
-            chart_data = rate_manager.create_live_chart(days, from_currency, to_currency)
-
-            if chart_data is None:
-                return jsonify({'error': f'無法獲取 {from_currency} ⇒ {to_currency} 數據'}), 400
-
-            img_base64, stats = chart_data
-
-
+    if all_charts_cached:
+        print(f"🟢 所有圖表均從伺服器快取返回: {from_currency}-{to_currency}")
+        # 如果全部都已快取，直接返回使用者請求的那個
+        cached_chart_data = rate_manager.chart_cache.get(cache_keys[days])
+        if cached_chart_data:
+            img_base64, stats, generated_at = cached_chart_data
             return jsonify({
                 'chart': img_base64,
                 'stats': stats,
-                'from_cache': False,
-                'cache_reason': '非預設貨幣對，即時生成',
-                'generated_at': datetime.now().isoformat(),
-                'data_count': stats['data_points']
+                'from_cache': True,
+                'cache_reason': '伺服器快取命中 (全部已預熱)',
+                'generated_at': generated_at,
+                'data_count': stats.get('data_points', 0)
             })
 
-        except Exception as e:
-            print(f"❌ 生成 {from_currency} ⇒ {to_currency} 圖表時發生錯誤: {e}")
-            return jsonify({'error': f'生成 {from_currency} ⇒ {to_currency} 圖表時發生錯誤: {str(e)}'}), 500
+    # --- 快取不完整，觸發一次性數據獲取和生成流程 ---
+    print(f"🔍 {from_currency}-{to_currency} 的快取不完整，開始一次性生成所有圖表...")
+
+    try:
+        # 1. 獲取最長週期（180天）的數據
+        # 對於預設貨幣對，從本地JSON獲取；對於其他貨幣對，從即時API獲取。
+        if from_currency == 'TWD' and to_currency == 'HKD':
+            # 預設貨幣對，從本地數據庫獲取180天數據
+            all_dates, all_rates = rate_manager.get_rates_for_period(180)
+            if not all_dates:
+                return jsonify({'error': '無法獲取 TWD-HKD 的本地數據'}), 400
+        else:
+            # 非預設貨幣對，從API獲取180天數據
+            live_rates_data = rate_manager.get_live_rates_for_period(180, from_currency, to_currency)
+            if not live_rates_data:
+                return jsonify({'error': f'無法獲取 {from_currency} ⇒ {to_currency} 的匯率數據'}), 400
+            
+            # 將即時數據轉換為 create_chart_from_data 所需的格式
+            all_dates_str = sorted(live_rates_data.keys())
+            all_dates = [datetime.strptime(d, '%Y-%m-%d') for d in all_dates_str]
+            all_rates = [live_rates_data[d] for d in all_dates_str]
+
+        # 2. 並行生成所有期間的圖表
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            # 提交所有圖表生成任務
+            future_to_period = {
+                executor.submit(rate_manager.create_chart_from_data, period, all_dates, all_rates, from_currency, to_currency): period
+                for period in periods_to_check
+            }
+
+            # 收集結果並存入快取
+            for future in as_completed(future_to_period):
+                period = future_to_period[future]
+                try:
+                    chart_data = future.result()
+                    if chart_data:
+                        img_base64, stats = chart_data
+                        generated_at = datetime.now().isoformat()
+                        # 存入快取
+                        rate_manager.chart_cache.put(cache_keys[period], (img_base64, stats, generated_at))
+                        print(f"  ✅ 已生成並快取 {period} 天圖表")
+                except Exception as e:
+                    print(f"  ❌ 生成 {period} 天圖表時出錯: {e}")
+
+        # 3. 返回使用者最初請求的圖表
+        final_chart_data = rate_manager.chart_cache.get(cache_keys[days])
+        if final_chart_data:
+            img_base64, stats, generated_at = final_chart_data
+            return jsonify({
+                'chart': img_base64,
+                'stats': stats,
+                'from_cache': False, # 標記為新生成
+                'generated_at': generated_at,
+                'data_count': stats.get('data_points', 0)
+            })
+        else:
+            # 如果連使用者請求的圖表都生成失敗，返回錯誤
+            return jsonify({'error': f'無法生成所請求的 {days} 天圖表'}), 500
+
+    except Exception as e:
+        print(f"❌ 在一次性生成流程中發生嚴重錯誤: {e}")
+        return jsonify({'error': f'處理圖表請求時發生內部錯誤: {str(e)}'}), 500
 
 @app.route('/api/data_status')
 def data_status():
