@@ -710,42 +710,96 @@ class ExchangeRateManager:
         if os.path.exists(full_path):
             return f"/static/{relative_path.replace(os.path.sep, '/')}"
 
-        fig, ax = plt.subplots(figsize=(12, 7), dpi=150)
-        fig.patch.set_alpha(0)
-        ax.set_alpha(0)
-
-        dates = [datetime.strptime(d, '%Y-%m-%d') for d in all_dates_str]
+        # 創建圖表
+        fig, ax = plt.subplots(figsize=(15, 8.5))
         
-        ax.plot(dates, all_rates, marker='o', linestyle='-', color='#4A90E2', markersize=4, label=f'{from_currency} to {to_currency}')
+        # 轉換日期
+        dates = [datetime.strptime(d, '%Y-%m-%d') for d in all_dates_str]
+        rates = all_rates
 
-        if all_rates:
-            max_rate = max(all_rates)
-            min_rate = min(all_rates)
-            max_date = dates[all_rates.index(max_rate)]
-            min_date = dates[all_rates.index(min_rate)]
+        ax.plot(dates, rates, marker='o', linewidth=2, markersize=4, color='#2E86AB')
+        
+        # 設定標題
+        period_names = {7: '近1週', 30: '近1個月', 90: '近3個月', 180: '近6個月'}
+        # 假設匯率是 TWD -> HKD，標題顯示 HKD -> TWD，所以是 1 TWD = X HKD
+        title = f'{from_currency} 到 {to_currency} 匯率走勢圖 ({period_names.get(days, f"近{days}天")})'
+        ax.set_title(title, fontsize=16, fontweight='bold', pad=20)
+        ax.set_xlabel('日期', fontsize=12)
+        ax.set_ylabel('匯率', fontsize=12)
+        
+        # 手動設置X軸刻度
+        if days <= 7:
+            tick_dates = dates
+        elif days <= 30:
+            tick_dates = dates[::2] if len(dates) > 2 else dates
+        elif days <= 90:
+            tick_dates = dates[::len(dates)//10] if len(dates) > 10 else dates[::2]
+        else:
+            tick_dates = dates[::len(dates)//15] if len(dates) > 15 else dates[::3]
+
+        # 確保最後一個日期（今天）總是被包含在刻度中
+        if days > 7 and dates and dates[-1] not in tick_dates:
+            tick_dates.append(dates[-1])
+
+        ax.set_xticks(tick_dates)
+        ax.set_xticklabels([date.strftime('%m/%d') for date in tick_dates])
+
+        ax.tick_params(axis='x', which='major', pad=8)
+        
+        # 添加網格
+        ax.grid(True, alpha=0.3)
+        
+        # 添加平均線
+        if rates:
+            avg_rate = sum(rates) / len(rates)
+            ax.axhline(y=avg_rate, color='orange', linestyle='--', linewidth=1.5, alpha=0.8, label=f'平均值: {avg_rate:.4f}')
+            ax.legend(loc='upper right', fontsize=10)
+        
+        # 設定 Y 軸範圍
+        if rates:
+            y_min, y_max = min(rates), max(rates)
+            y_range = y_max - y_min if y_max > y_min else 0.1
+            if days >= 30:
+                ax.set_ylim(y_min - y_range * 0.05, y_max + y_range * 0.15)
+            else:
+                ax.set_ylim(y_min - y_range * 0.05, y_max + y_range * 0.12)
+        
+        # 標記最高點和最低點
+        if rates:
+            max_rate = max(rates)
+            min_rate = min(rates)
+            max_index = rates.index(max_rate)
+            min_index = rates.index(min_rate)
             
-            ax.scatter([max_date], [max_rate], color='#D0021B', s=80, zorder=5, label=f'最高: {max_rate:.4f}')
-            ax.scatter([min_date], [min_rate], color='#417505', s=80, zorder=5, label=f'最低: {min_rate:.4f}')
-
-        ax.set_title(f'{from_currency} 到 {to_currency} 的匯率趨勢圖 ({days} 天)', fontsize=18, color='#333333', pad=20)
-        ax.set_xlabel('日期', fontsize=12, color='#333333')
-        ax.set_ylabel('匯率', fontsize=12, color='#333333')
-
-        ax.grid(True, which='both', linestyle='--', linewidth=0.5, color='#DDDDDD')
-        ax.tick_params(axis='x', colors='#333333', labelsize=10, rotation=45)
-        ax.tick_params(axis='y', colors='#333333', labelsize=10)
-
-        ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
-        ax.xaxis.set_major_locator(mdates.AutoDateLocator())
-
-        legend = ax.legend(loc='upper right', fontsize=10, frameon=True, facecolor='#333333', edgecolor='#555555')
-        for text in legend.get_texts():
-            text.set_color("white")
+            # 標記最高點
+            ax.annotate(f'{max_rate:.4f}', 
+                       (dates[max_index], max_rate), 
+                       textcoords="offset points", 
+                       xytext=(0,10), 
+                       ha='center',
+                       va='bottom',
+                       fontsize=9,
+                       color='red',
+                       fontweight='bold',
+                       bbox=dict(boxstyle="round", facecolor='white', alpha=0.6, edgecolor='none'))
             
-        plt.tight_layout(pad=1.5)
-
+            # 標記最低點
+            ax.annotate(f'{min_rate:.4f}', 
+                       (dates[min_index], min_rate), 
+                       textcoords="offset points", 
+                       xytext=(0,10), # 調整y偏移以避免重疊
+                       ha='center',
+                       va='bottom',
+                       fontsize=9,
+                       color='green',
+                       fontweight='bold',
+                       bbox=dict(boxstyle="round", facecolor='white', alpha=0.6, edgecolor='none'))
+        
+        # 手動調整佈局
+        fig.subplots_adjust(left=0.08, right=0.95, top=0.85, bottom=0.20)
+        
         try:
-            fig.savefig(full_path, format='png', transparent=True, bbox_inches='tight')
+            fig.savefig(full_path, format='png', transparent=False, bbox_inches='tight', facecolor='white')
         except Exception as e:
             print(f"儲存圖表時出錯: {e}")
             plt.close(fig)
