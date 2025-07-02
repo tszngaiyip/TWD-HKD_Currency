@@ -248,9 +248,13 @@ class ExchangeRateManager:
         self._pause_lock = Lock()
         self._pause_message_printed = False
 
-        # 只保留圖表快取，移除API快取
-        # 快取圖表數據，容量50，過期時間1小時
-        self.chart_cache = LRUCache(capacity=50, ttl_seconds=3600)
+        # 確保圖表目錄存在
+        self.charts_dir = os.path.join('static', 'charts')
+        if not os.path.exists(self.charts_dir):
+            os.makedirs(self.charts_dir)
+
+        # 初始化 LRU 快取
+        self.lru_cache = LRUCache(capacity=50, ttl_seconds=3600)
 
         # 簡化快取配置
         self.cache_config = {
@@ -308,7 +312,7 @@ class ExchangeRateManager:
         """檢查緩存是否仍然有效"""
         # 使用 LRU cache 而不是全域 dict
         cache_key = f"chart_TWD_HKD_{days}"
-        cached_info = self.chart_cache.get(cache_key)
+        cached_info = self.lru_cache.get(cache_key)
         
         if cached_info is None:
             return False, "緩存不存在"
@@ -442,7 +446,6 @@ class ExchangeRateManager:
                 
                 # 跳過週末
                 if current_date.weekday() < 5:  # Monday=0, Friday=4
-                    print(f"  🔍 獲取 {date_str} 的數據...")
                     data = self.get_exchange_rate(current_date)
                     
                     if data and 'data' in data:
@@ -453,13 +456,10 @@ class ExchangeRateManager:
                                 'updated': datetime.now().isoformat()
                             }
                             updated_count += 1
-                            print(f"    💱 成功：{conversion_rate}")
                         except (KeyError, ValueError) as e:
                             print(f"    ❌ 解析失敗：{e}")
                     else:
                         print(f"    ⚠️ 無法獲取 {date_str} 的數據")
-                else:
-                    print(f"  ⏭️ 跳過週末：{date_str}")
                 
                 current_date += timedelta(days=1)
         else:
@@ -476,7 +476,6 @@ class ExchangeRateManager:
                 summary_parts.append(f"清理 {removed_count} 筆舊數據")
             
             print(f"💾 極簡更新完成：{', '.join(summary_parts)}")
-            print(f"📊 當前數據：{len(self.data)} 筆（{old_count} → {len(self.data)}）")
         else:
             print("✅ 數據已是最新狀態，無需更新")
         
@@ -608,555 +607,240 @@ class ExchangeRateManager:
 
         return dates, rates
 
-    def create_chart(self, days):
+    def create_chart(self, days, from_currency, to_currency):
         """創建圖表（帶 LRU Cache）"""
-        # 生成圖表快取鍵
-        data_fingerprint, data_count = self.get_data_fingerprint(days)
-        cache_key = f"chart_{days}_{data_fingerprint}"
-
-        # 嘗試從快取中獲取圖表
-        cached_chart = self.chart_cache.get(cache_key)
-        if cached_chart is not None:
-            print(f"🟢 從快取獲取 {days} 天的圖表數據")
-            # 確保返回統一格式 (img_base64, stats, generated_at)
-            if len(cached_chart) == 3:
-                return cached_chart
-            elif len(cached_chart) == 2:
-                # 兼容舊格式，添加生成時間
-                img_base64, stats = cached_chart
-                generated_at = datetime.now().isoformat()
-                return (img_base64, stats, generated_at)
+        # 使用 LRU cache 而不是全域 dict
+        cache_key = f"chart_{from_currency}_{to_currency}_{days}"
+        cached_info = self.lru_cache.get(cache_key)
+        
+        if cached_info is None:
+            # 快取未命中，重新生成
+            chart_data = self.regenerate_chart_data(days, from_currency, to_currency)
+            if chart_data:
+                # 返回新生成的數據
+                return chart_data
             else:
-                return cached_chart
+                # 生成失敗
+                return None
+        
+        # 快取命中且有效
+        # 檢查快取中的 URL 是否還存在
+        chart_url = cached_info.get('chart_url')
+        if chart_url and os.path.exists(os.path.join(self.charts_dir, os.path.basename(chart_url))):
+            return cached_info
+        else:
+            # 文件丟失，重新生成
+            return self.regenerate_chart_data(days, from_currency, to_currency)
 
-        print(f"🔍 生成新的 {days} 天圖表")
-        dates, rates = self.get_rates_for_period(days)
-
-        if not dates:
+    def regenerate_chart_data(self, days, from_currency, to_currency):
+        """內部輔助函數：重新生成圖表並更新快取"""
+        # 獲取數據
+        all_dates, all_rates = self.get_rates_for_period(days)
+        if not all_dates:
             return None
 
-        # 清除之前的圖表
-        plt.clf()
+        # 將 datetime 對象轉換為字串列表
+        all_dates_str = [d.strftime('%Y-%m-%d') for d in all_dates]
 
-        # 創建圖表
-        fig, ax = plt.subplots(figsize=(12, 6))
-        ax.plot(dates, rates, marker='o', linewidth=2, markersize=4, color='#2E86AB')
+        # 生成圖表並獲取 URL
+        chart_url = self.create_chart_from_data(days, all_dates_str, all_rates, from_currency, to_currency)
+        if not chart_url:
+            return None
 
-        # 設定標題
-        period_names = {7: '近1週', 30: '近1個月', 90: '近3個月', 180: '近6個月'}
-        title = f'HKD 到 TWD 匯率走勢圖 ({period_names.get(days, f"近{days}天")})'
-        ax.set_title(title, fontsize=16, fontweight='bold', pad=20)
-        ax.set_xlabel('日期', fontsize=12)
-        ax.set_ylabel('匯率', fontsize=12)
+        # 獲取新的數據指紋和統計數據
+        data_fingerprint, data_count = self.get_data_fingerprint(days)
+        stats = self._calculate_stats(all_rates, all_dates_str)
 
-        # 手動設置X軸刻度，確保與數據點對齊
-        if days <= 7:
-            # 每天顯示一個刻度
-            ax.set_xticks(dates)
-            ax.set_xticklabels([date.strftime('%m/%d') for date in dates])
-        elif days <= 30:
-            # 每2天顯示一個刻度
-            tick_dates = dates[::2]
-            ax.set_xticks(tick_dates)
-            ax.set_xticklabels([date.strftime('%m/%d') for date in tick_dates])
-        elif days <= 90:
-            # 每週顯示2-3個刻度
-            tick_dates = dates[::len(dates)//10] if len(dates) > 10 else dates[::2]
-            ax.set_xticks(tick_dates)
-            ax.set_xticklabels([date.strftime('%m/%d') for date in tick_dates])
-        else:
-            # 每週顯示1-2個刻度
-            tick_dates = dates[::len(dates)//15] if len(dates) > 15 else dates[::3]
-            ax.set_xticks(tick_dates)
-            ax.set_xticklabels([date.strftime('%m/%d') for date in tick_dates])
-
-        # 調整X軸刻度的間距
-        ax.tick_params(axis='x', which='major', pad=8)
-
-        # 添加網格
-        ax.grid(True, alpha=0.3)
-
-        # 添加平均線
-        if rates:
-            avg_rate = sum(rates) / len(rates)
-            ax.axhline(y=avg_rate, color='orange', linestyle='--', linewidth=1.5, alpha=0.8, label=f'平均值: {avg_rate:.3f}')
-            ax.legend(loc='upper right', fontsize=10)
-
-        # 設定 Y 軸範圍，為標籤和圖例留出空間
-        if rates:
-            y_min, y_max = min(rates), max(rates)
-            y_range = y_max - y_min
-            # 根據期間調整邊距，為標籤和圖例留出空間
-            if days >= 30:
-                # 長期圖表統一在上方顯示最高最低點標籤，並為圖例留空間
-                ax.set_ylim(y_min - y_range * 0.05, y_max + y_range * 0.15)
-            else:
-                # 短期圖表為圖例留出空間
-                ax.set_ylim(y_min - y_range * 0.05, y_max + y_range * 0.12)
-
-        # 根據期間決定標籤顯示策略
-        # 所有圖表統一標記最高點和最低點
-        if rates:
-            max_rate = max(rates)
-            min_rate = min(rates)
-            max_index = rates.index(max_rate)
-            min_index = rates.index(min_rate)
-
-            # 標記最高點
-            ax.annotate(f'{max_rate:.3f}',
-                       (dates[max_index], max_rate),
-                       textcoords="offset points",
-                       xytext=(0,10),
-                       ha='center',
-                       va='bottom',
-                       fontsize=9,
-                       color='red',
-                       fontweight='bold',
-                       bbox=dict(boxstyle="round", facecolor='white', alpha=0.6, edgecolor='none'))
-
-            # 標記最低點
-            ax.annotate(f'{min_rate:.3f}',
-                       (dates[min_index], min_rate),
-                       textcoords="offset points",
-                       xytext=(0,10),
-                       ha='center',
-                       va='bottom',
-                       fontsize=9,
-                       color='green',
-                       fontweight='bold',
-                       bbox=dict(boxstyle="round", facecolor='white', alpha=0.6, edgecolor='none'))
-
-        # 手動調整佈局，避免使用不穩定的 tight_layout
-        fig.subplots_adjust(left=0.08, right=0.95, top=0.85, bottom=0.15)
-
-        # 轉換為base64字符串
-        img_buffer = io.BytesIO()
-        plt.savefig(img_buffer, format='png', dpi=300)
-        img_buffer.seek(0)
-        img_base64 = base64.b64encode(img_buffer.getvalue()).decode()
-        plt.close(fig)
-
-        # 計算統計信息
-        stats = {
-            'max_rate': max(rates),
-            'min_rate': min(rates),
-            'avg_rate': sum(rates) / len(rates),
-            'data_points': len(rates),
-            'date_range': f"{dates[0].strftime('%Y-%m-%d')} 至 {dates[-1].strftime('%Y-%m-%d')}"
-        } if rates else None
-
-        # 生成時間
-        generated_at = datetime.now().isoformat()
-
-        # 將圖表結果存入快取，統一使用三元組格式
-        chart_result = (img_base64, stats, generated_at)
-        self.chart_cache.put(cache_key, chart_result)
-        print(f"💾 已將 {days} 天的圖表數據存入快取")
-
-        return chart_result
+        # 存入新數據到快取
+        cache_key = f"chart_{from_currency}_{to_currency}_{days}"
+        new_cache_data = {
+            'chart_url': chart_url,
+            'stats': stats,
+            'generated_at': datetime.now().isoformat(),
+            'data_fingerprint': data_fingerprint,
+            'data_count': data_count
+        }
+        self.lru_cache.put(cache_key, new_cache_data)
+        
+        return new_cache_data
 
     def create_live_chart(self, days, from_currency='TWD', to_currency='HKD'):
-        """創建即時圖表（不使用緩存數據）"""
-        rates_data = self.get_live_rates_for_period(days, from_currency, to_currency)
+        """創建即時圖表，返回包含 URL 和統計數據的字典"""
+        live_rates_data = self.get_live_rates_for_period(days, from_currency, to_currency)
 
-        if not rates_data:
+        if not live_rates_data:
             return None
 
-        # 準備數據
-        dates = sorted(rates_data.keys())
-        rates = [rates_data[date] for date in dates]
+        all_dates_str = sorted(live_rates_data.keys())
+        all_rates = [live_rates_data[d] for d in all_dates_str]
 
-        if not dates or not rates:
+        if not all_dates_str:
+            return None
+        
+        chart_url = self.create_chart_from_data(days, all_dates_str, all_rates, from_currency, to_currency)
+        if not chart_url:
+            return None
+            
+        stats = self._calculate_stats(all_rates, all_dates_str)
+        
+        return {
+            'chart_url': chart_url,
+            'stats': stats,
+            'from_cache': False,
+            'generated_at': datetime.now().isoformat()
+        }
+
+    def create_chart_from_data(self, days, all_dates_str, all_rates, from_currency, to_currency):
+        """
+        從提供的數據生成圖表，並將其保存為文件，返回其 URL 路徑。
+        all_dates_str 應為 'YYYY-MM-DD' 格式的字符串列表。
+        """
+        if not all_dates_str or not all_rates:
             return None
 
-        # 轉換日期格式
-        date_objects = [datetime.strptime(date, '%Y-%m-%d') for date in dates]
+        data_str = f"{days}-{from_currency}-{to_currency}-{''.join(all_dates_str)}-{''.join(map(str, all_rates))}"
+        chart_hash = hashlib.md5(data_str.encode('utf-8')).hexdigest()
+        filename = f"chart_{chart_hash}.png"
+        
+        relative_path = os.path.join('charts', filename)
+        full_path = os.path.join(self.charts_dir, filename)
 
-        # 清除之前的圖表
-        plt.clf()
+        if os.path.exists(full_path):
+            return f"/static/{relative_path.replace(os.path.sep, '/')}"
 
-        # 創建圖表 - 與 create_chart 保持一致的尺寸
-        fig, ax = plt.subplots(figsize=(12, 6))
-        ax.plot(date_objects, rates, marker='o', linewidth=2, markersize=4, color='#2E86AB')
+        fig, ax = plt.subplots(figsize=(12, 7), dpi=150)
+        fig.patch.set_alpha(0)
+        ax.set_alpha(0)
 
-        # 設定標題 - 與 create_chart 保持一致的格式
-        period_names = {7: '近1週', 30: '近1個月', 90: '近3個月', 180: '近6個月'}
-        title = f'{to_currency} 到 {from_currency} 匯率走勢圖 ({period_names.get(days, f"近{days}天")})'
-        ax.set_title(title, fontsize=16, fontweight='bold', pad=20)
-        ax.set_xlabel('日期', fontsize=12)
-        ax.set_ylabel('匯率', fontsize=12)
+        dates = [datetime.strptime(d, '%Y-%m-%d') for d in all_dates_str]
+        
+        ax.plot(dates, all_rates, marker='o', linestyle='-', color='#4A90E2', markersize=4, label=f'{from_currency} to {to_currency}')
 
-        # 手動設置X軸刻度，確保與數據點對齊 - 與 create_chart 保持一致
-        if days <= 7:
-            # 每天顯示一個刻度
-            ax.set_xticks(date_objects)
-            ax.set_xticklabels([date.strftime('%m/%d') for date in date_objects])
-        elif days <= 30:
-            # 每2天顯示一個刻度
-            tick_dates = date_objects[::2]
-            ax.set_xticks(tick_dates)
-            ax.set_xticklabels([date.strftime('%m/%d') for date in tick_dates])
-        elif days <= 90:
-            # 每週顯示2-3個刻度
-            tick_dates = date_objects[::len(date_objects)//10] if len(date_objects) > 10 else date_objects[::2]
-            ax.set_xticks(tick_dates)
-            ax.set_xticklabels([date.strftime('%m/%d') for date in tick_dates])
-        else:
-            # 每週顯示1-2個刻度
-            tick_dates = date_objects[::len(date_objects)//15] if len(date_objects) > 15 else date_objects[::3]
-            ax.set_xticks(tick_dates)
-            ax.set_xticklabels([date.strftime('%m/%d') for date in tick_dates])
+        if all_rates:
+            max_rate = max(all_rates)
+            min_rate = min(all_rates)
+            max_date = dates[all_rates.index(max_rate)]
+            min_date = dates[all_rates.index(min_rate)]
+            
+            ax.scatter([max_date], [max_rate], color='#D0021B', s=80, zorder=5, label=f'最高: {max_rate:.4f}')
+            ax.scatter([min_date], [min_rate], color='#417505', s=80, zorder=5, label=f'最低: {min_rate:.4f}')
 
-        # 調整X軸刻度的間距
-        ax.tick_params(axis='x', which='major', pad=8)
+        ax.set_title(f'{from_currency} 到 {to_currency} 的匯率趨勢圖 ({days} 天)', fontsize=18, color='white', pad=20)
+        ax.set_xlabel('日期', fontsize=12, color='white')
+        ax.set_ylabel('匯率', fontsize=12, color='white')
 
-        # 添加網格 - 與 create_chart 保持一致
-        ax.grid(True, alpha=0.3)
+        ax.grid(True, which='both', linestyle='--', linewidth=0.5, color='#555555')
+        ax.tick_params(axis='x', colors='white', labelsize=10, rotation=45)
+        ax.tick_params(axis='y', colors='white', labelsize=10)
 
-        # 添加平均線 - 與 create_chart 保持一致
-        if rates:
-            avg_rate = sum(rates) / len(rates)
-            ax.axhline(y=avg_rate, color='orange', linestyle='--', linewidth=1.5, alpha=0.8, label=f'平均值: {avg_rate:.3f}')
-            ax.legend(loc='upper right', fontsize=10)
+        ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+        ax.xaxis.set_major_locator(mdates.AutoDateLocator())
 
-        # 設定 Y 軸範圍，為標籤和圖例留出空間 - 與 create_chart 保持一致
-        if rates:
-            y_min, y_max = min(rates), max(rates)
-            y_range = y_max - y_min
-            # 根據期間調整邊距，為標籤和圖例留出空間
-            if days >= 30:
-                # 長期圖表統一在上方顯示最高最低點標籤，並為圖例留空間
-                ax.set_ylim(y_min - y_range * 0.05, y_max + y_range * 0.15)
-            else:
-                # 短期圖表為圖例留出空間
-                ax.set_ylim(y_min - y_range * 0.05, y_max + y_range * 0.12)
+        legend = ax.legend(loc='upper right', fontsize=10, frameon=True, facecolor='#333333', edgecolor='#555555')
+        for text in legend.get_texts():
+            text.set_color("white")
+            
+        plt.tight_layout(pad=1.5)
 
-        # 根據期間決定標籤顯示策略
-        # 所有圖表統一標記最高點和最低點
-        if rates:
-            max_rate = max(rates)
-            min_rate = min(rates)
-            max_index = rates.index(max_rate)
-            min_index = rates.index(min_rate)
-
-            # 標記最高點
-            ax.annotate(f'{max_rate:.3f}',
-                       (date_objects[max_index], max_rate),
-                       textcoords="offset points",
-                       xytext=(0,10),
-                       ha='center',
-                       va='bottom',
-                       fontsize=9,
-                       color='red',
-                       fontweight='bold',
-                       bbox=dict(boxstyle="round", facecolor='white', alpha=0.6, edgecolor='none'))
-
-            # 標記最低點
-            ax.annotate(f'{min_rate:.3f}',
-                       (date_objects[min_index], min_rate),
-                       textcoords="offset points",
-                       xytext=(0,10),
-                       ha='center',
-                       va='bottom',
-                       fontsize=9,
-                       color='green',
-                       fontweight='bold',
-                       bbox=dict(boxstyle="round", facecolor='white', alpha=0.6, edgecolor='none'))
-
-        # 手動調整佈局，避免使用不穩定的 tight_layout
-        fig.subplots_adjust(left=0.08, right=0.95, top=0.9, bottom=0.1)
-
-        # 轉換為base64字符串 - 與 create_chart 保持一致的DPI
-        img_buffer = io.BytesIO()
-        plt.savefig(img_buffer, format='png', dpi=300)
-        img_buffer.seek(0)
-        img_base64 = base64.b64encode(img_buffer.getvalue()).decode()
-        plt.close(fig)
-
-        # 計算統計信息 - 與 create_chart 保持一致的格式
-        stats = {
-            'max_rate': max(rates),
-            'min_rate': min(rates),
-            'avg_rate': sum(rates) / len(rates),
-            'data_points': len(rates),
-            'date_range': f"{date_objects[0].strftime('%Y-%m-%d')} 至 {date_objects[-1].strftime('%Y-%m-%d')}"
-        } if rates else None
-
-        return img_base64, stats
-
-    def create_chart_from_data(self, days, all_dates, all_rates, from_currency, to_currency):
-        """從已準備好的數據創建圖表（避免重複數據查詢）"""
-        if not all_dates or not all_rates:
+        try:
+            fig.savefig(full_path, format='png', transparent=True, bbox_inches='tight')
+        except Exception as e:
+            print(f"儲存圖表時出錯: {e}")
+            plt.close(fig)
             return None
-
-        # 從完整數據中提取指定天數的子集
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=days)
-
-        # 過濾出指定時間範圍的數據
-        filtered_dates = []
-        filtered_rates = []
-
-        for date, rate in zip(all_dates, all_rates):
-            if start_date <= date <= end_date:
-                filtered_dates.append(date)
-                filtered_rates.append(rate)
-
-        if not filtered_dates:
-            return None
-
-        # 清除之前的圖表
-        plt.clf()
-
-        # 創建圖表
-        fig, ax = plt.subplots(figsize=(12, 6))
-        ax.plot(filtered_dates, filtered_rates, marker='o', linewidth=2, markersize=4, color='#2E86AB')
-
-        # 設定標題
-        period_names = {7: '近1週', 30: '近1個月', 90: '近3個月', 180: '近6個月'}
-        title = f'{to_currency} 到 {from_currency} 匯率走勢圖 ({period_names.get(days, f"近{days}天")})'
-        ax.set_title(title, fontsize=16, fontweight='bold', pad=20)
-        ax.set_xlabel('日期', fontsize=12)
-        ax.set_ylabel('匯率', fontsize=12)
-
-        # 手動設置X軸刻度，確保與數據點對齊
-        if days <= 7:
-            # 每天顯示一個刻度
-            ax.set_xticks(filtered_dates)
-            ax.set_xticklabels([date.strftime('%m/%d') for date in filtered_dates])
-        elif days <= 30:
-            # 每2天顯示一個刻度
-            tick_dates = filtered_dates[::2]
-            ax.set_xticks(tick_dates)
-            ax.set_xticklabels([date.strftime('%m/%d') for date in tick_dates])
-        elif days <= 90:
-            # 每週顯示2-3個刻度
-            tick_dates = filtered_dates[::len(filtered_dates)//10] if len(filtered_dates) > 10 else filtered_dates[::2]
-            ax.set_xticks(tick_dates)
-            ax.set_xticklabels([date.strftime('%m/%d') for date in tick_dates])
-        else:
-            # 每週顯示1-2個刻度
-            tick_dates = filtered_dates[::len(filtered_dates)//15] if len(filtered_dates) > 15 else filtered_dates[::3]
-            ax.set_xticks(tick_dates)
-            ax.set_xticklabels([date.strftime('%m/%d') for date in tick_dates])
-
-        # 調整X軸刻度的間距
-        ax.tick_params(axis='x', which='major', pad=8)
-
-        # 添加網格
-        ax.grid(True, alpha=0.3)
-
-        # 添加平均線
-        if filtered_rates:
-            avg_rate = sum(filtered_rates) / len(filtered_rates)
-            ax.axhline(y=avg_rate, color='orange', linestyle='--', linewidth=1.5, alpha=0.8, label=f'平均值: {avg_rate:.3f}')
-            ax.legend(loc='upper right', fontsize=10)
-
-        # 設定 Y 軸範圍，為標籤和圖例留出空間
-        if filtered_rates:
-            y_min, y_max = min(filtered_rates), max(filtered_rates)
-            y_range = y_max - y_min
-            # 根據期間調整邊距，為標籤和圖例留出空間
-            if days >= 30:
-                # 長期圖表統一在上方顯示最高最低點標籤，並為圖例留空間
-                ax.set_ylim(y_min - y_range * 0.05, y_max + y_range * 0.15)
-            else:
-                # 短期圖表為圖例留出空間
-                ax.set_ylim(y_min - y_range * 0.05, y_max + y_range * 0.12)
-
-        # 根據期間決定標籤顯示策略
-        # 所有圖表統一標記最高點和最低點
-        if filtered_rates:
-            max_rate = max(filtered_rates)
-            min_rate = min(filtered_rates)
-            max_index = filtered_rates.index(max_rate)
-            min_index = filtered_rates.index(min_rate)
-
-            # 標記最高點
-            ax.annotate(f'{max_rate:.3f}',
-                       (filtered_dates[max_index], max_rate),
-                       textcoords="offset points",
-                       xytext=(0,10),
-                       ha='center',
-                       va='bottom',
-                       fontsize=9,
-                       color='red',
-                       fontweight='bold',
-                       bbox=dict(boxstyle="round", facecolor='white', alpha=0.6, edgecolor='none'))
-
-            # 標記最低點
-            ax.annotate(f'{min_rate:.3f}',
-                       (filtered_dates[min_index], min_rate),
-                       textcoords="offset points",
-                       xytext=(0,10),
-                       ha='center',
-                       va='bottom',
-                       fontsize=9,
-                       color='green',
-                       fontweight='bold',
-                       bbox=dict(boxstyle="round", facecolor='white', alpha=0.6, edgecolor='none'))
-
-        # 手動調整佈局，避免使用不穩定的 tight_layout
-        fig.subplots_adjust(left=0.08, right=0.95, top=0.9, bottom=0.1)
-
-        # 轉換為base64字符串
-        img_buffer = io.BytesIO()
-        plt.savefig(img_buffer, format='png', dpi=300)
-        img_buffer.seek(0)
-        img_base64 = base64.b64encode(img_buffer.getvalue()).decode()
-        plt.close(fig)
-
-        # 計算統計信息
-        stats = {
-            'max_rate': max(filtered_rates),
-            'min_rate': min(filtered_rates),
-            'avg_rate': sum(filtered_rates) / len(filtered_rates),
-            'data_points': len(filtered_rates),
-            'date_range': f"{filtered_dates[0].strftime('%Y-%m-%d')} 至 {filtered_dates[-1].strftime('%Y-%m-%d')}"
-        } if filtered_rates else None
-
-        return img_base64, stats
+        finally:
+            plt.close(fig)
+        
+        self._cleanup_charts_directory(self.charts_dir, max_age_days=1)
+        
+        # 返回 Flask 能識別的靜態文件 URL
+        return f"/static/{relative_path.replace(os.path.sep, '/')}"
 
     def pregenerate_all_charts(self):
-        """預生成所有期間的圖表（優化版2：邊取數據邊生圖，提升使用者體驗）"""
+        """預生成所有期間的圖表"""
         periods = [7, 30, 90, 180]
         print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 開始預生成圖表...")
 
-        # 檢查哪些圖表需要更新
-        needed_periods = []
-        for period in periods:
-            is_valid = self.is_cache_valid(period)
-            if not is_valid:
-                needed_periods.append(period)
-
-        if not needed_periods:
-            print("✅ 所有圖表緩存都有效，無需重新生成")
-            return
-
-        # 獲取最長需要的時間範圍數據
-        max_needed_period = max(needed_periods)
-        print(f"📊 正在獲取數據範圍（{max_needed_period}天）...")
-        all_dates, all_rates = self.get_rates_for_period(max_needed_period)
-
-        if not all_dates:
-            print("❌ 無法獲取數據，跳過圖表生成")
-            return
-
-        print(f"✅ 成功獲取 {len(all_dates)} 個數據點")
-
-        # 優化策略：按時間週期從短到長生成圖表（優先短期，讓使用者更快看到7天、30天圖表）
-        needed_periods.sort()  # [7, 30, 90, 180] 的順序
-
-        for period in needed_periods:
-            try:
-                print(f"  🔄 正在生成近{period}天圖表...")
-
-                # 使用優化版本的圖表生成方法，重用已獲取的數據
-                chart_data = self.create_chart_from_data(period, all_dates, all_rates, 'TWD', 'HKD')
-
-                if chart_data:
-                    img_base64, stats = chart_data
-
-                    # 獲取數據指紋
-                    data_fingerprint, data_count = self.get_data_fingerprint(period)
-
-                    # 存入 LRU cache
-                    cache_key = f"chart_TWD_HKD_{period}"
-                    cache_data = {
-                        'chart': img_base64,
-                        'stats': stats,
-                        'generated_at': datetime.now().isoformat(),
-                        'data_fingerprint': data_fingerprint,
-                        'data_count': data_count
-                    }
-                    self.chart_cache.put(cache_key, cache_data)
-
-                    print(f"  ✅ 近{period}天圖表生成完成 (數據點: {stats['data_points']})")
-                else:
-                    print(f"  ❌ 近{period}天圖表生成失敗")
-            except Exception as e:
-                print(f"  ❌ 近{period}天圖表生成錯誤: {str(e)}")
-
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            future_to_period = {executor.submit(self.create_chart, period, 'TWD', 'HKD'): period for period in periods}
+            for future in as_completed(future_to_period):
+                period = future_to_period[future]
+                try:
+                    chart_data = future.result()
+                    if chart_data and chart_data.get('chart_url'):
+                        print(f"  ✅ 預生成 {period} 天圖表成功")
+                    else:
+                        print(f"  ❌ 預生成 {period} 天圖表失敗")
+                except Exception as e:
+                    print(f"  ❌ 預生成 {period} 天圖表時發生錯誤: {e}")
+        
         print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 圖表預生成完成")
+
+    @staticmethod
+    def _cleanup_charts_directory(directory, max_age_days=1):
+        """清理圖表目錄中的過期文件"""
+        try:
+            current_time = time.time()
+            for filename in os.listdir(directory):
+                file_path = os.path.join(directory, filename)
+                if os.path.isfile(file_path):
+                    file_age = current_time - os.path.getmtime(file_path)
+                    if file_age > max_age_days * 24 * 3600:
+                        os.remove(file_path)
+        except Exception as e:
+            print(f"清理圖表目錄時出錯: {e}")
 
     def clear_expired_cache(self):
         """清理過期的快取項目"""
-        chart_expired = self.chart_cache.clear_expired()
-
-        if chart_expired > 0:
-            print(f"🧹 快取清理完成：圖表快取過期 {chart_expired} 項")
-
-        return chart_expired
+        cleared_count = self.lru_cache.clear_expired()
+        if cleared_count > 0:
+            print(f"🧹 快取清理完成：圖表快取過期 {cleared_count} 項")
+        return cleared_count
 
     def get_cache_stats(self):
         """獲取快取統計資訊"""
-        chart_stats = self.chart_cache.get_stats()
-
-        return {
-            'chart_cache': chart_stats
-        }
+        return {'chart_cache': self.lru_cache.get_stats()}
 
     def clear_all_cache(self):
         """清空所有快取"""
-        self.chart_cache.clear()
-        print("🗑️ 已清空所有快取")
+        self.lru_cache.clear()
+        self._cleanup_charts_directory(self.charts_dir, max_age_days=0)
+        print("🗑️ 已清空所有快取和圖表文件")
 
     def warm_up_cache(self, periods=None):
-        """預熱 TWD-HKD 快取系統（優先短期圖表）"""
+        """預熱快取，生成指定期間的圖表"""
         if periods is None:
             periods = [7, 30, 90, 180]
-
-        print(f"🔥 開始預熱 TWD-HKD 快取系統...")
-
-        # 只預熱 TWD-HKD 貨幣對
-        from_currency, to_currency = 'TWD', 'HKD'
-        print(f"正在預熱 {from_currency} → {to_currency} 數據...")
-
-        # 預熱圖表快取（從短期到長期，優先短期圖表）
-        print("正在預熱圖表快取（優先短期圖表）...")
-        periods_sorted = sorted(periods)  # 確保從短期到長期
-        
-        for period in periods_sorted:
-            try:
-                print(f"  🔄 正在預熱 {period} 天圖表...")
-                self.create_chart(period)
-                print(f"  ✅ {period}天圖表快取已載入")
-            except Exception as e:
-                print(f"  ❌ {period}天圖表預熱失敗: {e}")
-
-        cache_stats = self.get_cache_stats()
-        print(f"🎉 TWD-HKD 快取預熱完成！")
-        print(f"  圖表快取：{cache_stats['chart_cache']['total_items']} 項")
+        print(f"🔥 預熱快取中，期間: {periods}...")
+        self.pregenerate_all_charts()
 
     def optimize_cache_performance(self):
-        """優化快取性能"""
-        # 清理過期項目
-        chart_expired = self.clear_expired_cache()
-
-        # 檢查快取使用率
-        chart_stats = self.chart_cache.get_stats()
-
+        """分析並優化快取性能"""
+        stats = self.get_cache_stats().get('chart_cache', {})
+        usage_ratio = stats.get('usage_ratio', 0)
+        hit_rate = stats.get('hit_rate', 0)
         optimizations = []
+        if usage_ratio > 0.9:
+            optimizations.append("快取使用率過高，考慮增加容量。")
+        if hit_rate < 50:
+            optimizations.append(f"快取命中率較低 ({hit_rate:.2f}%)，考慮預熱更多常用項目。")
+        if not optimizations:
+            optimizations.append("快取性能良好。")
+        return optimizations
 
-        # 圖表快取優化建議
-        if chart_stats['usage_ratio'] > 0.9:
-            optimizations.append("圖表快取使用率過高，建議增加容量")
-
-        if chart_stats['expired_items'] > chart_stats['valid_items'] * 0.3:
-            optimizations.append("圖表快取過期項目過多，建議調整 TTL")
-
+    def _calculate_stats(self, rates, dates_str):
+        if not rates or not dates_str:
+            return None
         return {
-            'expired_cleaned': {
-                'chart': chart_expired
-            },
-            'current_stats': {
-                'chart': chart_stats
-            },
-            'optimizations': optimizations
+            'max_rate': max(rates),
+            'min_rate': min(rates),
+            'avg_rate': sum(rates) / len(rates),
+            'data_points': len(rates),
+            'date_range': f"{dates_str[0]} 至 {dates_str[-1]}"
         }
 
 # 創建管理器實例
-rate_manager = ExchangeRateManager()
+manager = ExchangeRateManager()
 
 # SSE 相關函數
 def send_sse_event(event_type, data):
@@ -1208,26 +892,26 @@ def scheduled_update():
         today_str = today.strftime('%Y-%m-%d')
 
         # 檢查今天的資料是否已存在
-        if today_str in rate_manager.data:
+        if today_str in manager.data:
             print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 今天({today_str})的資料已存在，無需更新")
             return
 
         # 只獲取今天的資料
         print(f"正在獲取 {today_str} 的匯率資料...")
-        data = rate_manager.get_exchange_rate(today)
+        data = manager.get_exchange_rate(today)
 
         if data and 'data' in data:
             try:
                 conversion_rate = float(data['data']['conversionRate'])
-                rate_manager.data[today_str] = {
+                manager.data[today_str] = {
                     'rate': conversion_rate,
                     'updated': datetime.now().isoformat()
                 }
-                rate_manager.save_data()
+                manager.save_data()
                 print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 定時更新完成，成功獲取今天的匯率: {conversion_rate}")
 
                 # 預生成所有圖表
-                rate_manager.pregenerate_all_charts()
+                manager.pregenerate_all_charts()
 
                 # 發送SSE事件通知前端更新
                 send_sse_event('rate_updated', {
@@ -1255,7 +939,7 @@ def run_scheduler():
 # 設定定時任務
 schedule.every().day.at("09:00").do(scheduled_update)
 # 每小時清理一次過期快取
-schedule.every().hour.do(lambda: rate_manager.clear_expired_cache())
+schedule.every().hour.do(lambda: manager.clear_expired_cache())
 
 @app.route('/')
 def index():
@@ -1268,120 +952,37 @@ def get_chart():
     period = request.args.get('period', '7')
     from_currency = request.args.get('from_currency', 'TWD')
     to_currency = request.args.get('to_currency', 'HKD')
+    force_live = request.args.get('force_live', 'false').lower() == 'true'
 
     try:
         days = int(period)
-        if days not in [7, 30, 90, 180]:
-            days = 7
     except ValueError:
         days = 7
 
-    # 檢查所有相關期間的快取是否存在
-    periods_to_check = [7, 30, 90, 180]
-    cache_keys = {p: f"chart_{from_currency}_{to_currency}_{p}" for p in periods_to_check}
-    
-    # 檢查是否所有圖表都已在快取中
-    all_charts_cached = all(rate_manager.chart_cache.get(key) is not None for key in cache_keys.values())
-
-    if all_charts_cached:
-        print(f"🟢 所有圖表均從伺服器快取返回: {from_currency}-{to_currency}")
-        # 如果全部都已快取，直接返回使用者請求的那個
-        cached_chart_data = rate_manager.chart_cache.get(cache_keys[days])
-        if cached_chart_data:
-            # 統一快取數據格式：應該是 (img_base64, stats, generated_at) 的三元組
-            if len(cached_chart_data) == 3:
-                img_base64, stats, generated_at = cached_chart_data
-            else:
-                # 兼容舊格式 (img_base64, stats)
-                img_base64, stats = cached_chart_data
-                generated_at = datetime.now().isoformat()
-            
-            return jsonify({
-                'chart': img_base64,
-                'stats': stats,
-                'from_cache': True,
-                'cache_reason': '伺服器快取命中 (全部已預熱)',
-                'generated_at': generated_at,
-                'data_count': stats.get('data_points', 0) if stats else 0
-            })
-
-    # --- 快取不完整，觸發一次性數據獲取和生成流程 ---
-    print(f"🔍 {from_currency}-{to_currency} 的快取不完整，開始一次性生成所有圖表...")
-
     try:
-        # 1. 獲取最長週期（180天）的數據
-        # 對於預設貨幣對，從本地JSON獲取；對於其他貨幣對，從即時API獲取。
-        if from_currency == 'TWD' and to_currency == 'HKD':
-            # 預設貨幣對，從本地數據庫獲取180天數據
-            all_dates, all_rates = rate_manager.get_rates_for_period(180)
-            if not all_dates:
-                return jsonify({'error': '無法獲取 TWD-HKD 的本地數據'}), 400
+        if force_live:
+            chart_data = manager.create_live_chart(days, from_currency, to_currency)
         else:
-            # 非預設貨幣對，從API獲取180天數據
-            live_rates_data = rate_manager.get_live_rates_for_period(180, from_currency, to_currency)
-            if not live_rates_data:
-                return jsonify({'error': f'無法獲取 {from_currency} ⇒ {to_currency} 的匯率數據'}), 400
+            chart_data = manager.create_chart(days, from_currency, to_currency)
+
+        if chart_data and chart_data.get('chart_url'):
+            return jsonify(chart_data)
+        else:
+            return jsonify({'error': '無法生成圖表', 'no_data': True}), 500
             
-            # 將即時數據轉換為 create_chart_from_data 所需的格式
-            all_dates_str = sorted(live_rates_data.keys())
-            all_dates = [datetime.strptime(d, '%Y-%m-%d') for d in all_dates_str]
-            all_rates = [live_rates_data[d] for d in all_dates_str]
-
-        # 2. 並行生成所有期間的圖表
-        with ThreadPoolExecutor(max_workers=4) as executor:
-            # 提交所有圖表生成任務
-            future_to_period = {
-                executor.submit(rate_manager.create_chart_from_data, period, all_dates, all_rates, from_currency, to_currency): period
-                for period in periods_to_check
-            }
-
-            # 收集結果並存入快取
-            for future in as_completed(future_to_period):
-                period = future_to_period[future]
-                try:
-                    chart_data = future.result()
-                    if chart_data:
-                        img_base64, stats = chart_data
-                        generated_at = datetime.now().isoformat()
-                        # 統一存入快取格式：(img_base64, stats, generated_at)
-                        rate_manager.chart_cache.put(cache_keys[period], (img_base64, stats, generated_at))
-                        print(f"  ✅ 已生成並快取 {period} 天圖表")
-                except Exception as e:
-                    print(f"  ❌ 生成 {period} 天圖表時出錯: {e}")
-
-        # 3. 返回使用者最初請求的圖表
-        final_chart_data = rate_manager.chart_cache.get(cache_keys[days])
-        if final_chart_data:
-            # 統一處理快取數據格式
-            if len(final_chart_data) == 3:
-                img_base64, stats, generated_at = final_chart_data
-            else:
-                # 兼容舊格式
-                img_base64, stats = final_chart_data
-                generated_at = datetime.now().isoformat()
-                
-            return jsonify({
-                'chart': img_base64,
-                'stats': stats,
-                'from_cache': False, # 標記為新生成
-                'generated_at': generated_at,
-                'data_count': stats.get('data_points', 0) if stats else 0
-            })
-        else:
-            # 如果連使用者請求的圖表都生成失敗，返回錯誤
-            return jsonify({'error': f'無法生成所請求的 {days} 天圖表'}), 500
-
     except Exception as e:
-        print(f"❌ 在一次性生成流程中發生嚴重錯誤: {e}")
-        return jsonify({'error': f'處理圖表請求時發生內部錯誤: {str(e)}'}), 500
+        print(f"處理圖表請求時發生未預期的錯誤: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': '伺服器內部錯誤'}), 500
 
 @app.route('/api/data_status')
 def data_status():
     """檢查數據狀態"""
-    total_records = len(rate_manager.data)
+    total_records = len(manager.data)
 
     if total_records > 0:
-        dates = rate_manager.get_sorted_dates()
+        dates = manager.get_sorted_dates()
         earliest_date = dates[0]
         latest_date = dates[-1]
 
@@ -1415,16 +1016,16 @@ def get_latest_rate():
 
         if is_default_pair:
             # 預設貨幣對從緩存數據獲取
-            if not rate_manager.data:
+            if not manager.data:
                 return jsonify({
                     'success': False,
                     'message': '無TWD-HKD匯率數據，請先更新數據'
                 }), 400
 
             # 獲取最新日期的匯率
-            dates = rate_manager.get_sorted_dates()
+            dates = manager.get_sorted_dates()
             latest_date = dates[-1]
-            latest_data = rate_manager.data[latest_date]
+            latest_data = manager.data[latest_date]
 
             # 計算 1 TWD 等於多少 HKD
             twd_to_hkd_rate = latest_data['rate']
@@ -1434,7 +1035,7 @@ def get_latest_rate():
             trend_value = 0
             if len(dates) > 1:
                 prev_date = dates[-2]
-                prev_data = rate_manager.data[prev_date]
+                prev_data = manager.data[prev_date]
                 prev_rate = prev_data['rate']
 
                 trend_value = twd_to_hkd_rate - prev_rate
@@ -1466,7 +1067,7 @@ def get_latest_rate():
                 current_date -= timedelta(days=1)
 
 
-            rate_data = rate_manager.get_exchange_rate(current_date, from_currency, to_currency)
+            rate_data = manager.get_exchange_rate(current_date, from_currency, to_currency)
 
             if not rate_data or 'data' not in rate_data:
                 return jsonify({
@@ -1547,11 +1148,11 @@ def force_cleanup_data():
     """強制清理並更新近180天資料API"""
     try:
         print("🔄 強制執行180天資料清理...")
-        old_count = len(rate_manager.data)
+        old_count = len(manager.data)
 
         # 強制更新近180天資料（會自動清理超過180天的舊資料）
-        updated_count = rate_manager.update_data(180)
-        new_count = len(rate_manager.data)
+        updated_count = manager.update_data(180)
+        new_count = len(manager.data)
         removed_count = old_count - new_count + updated_count
 
         message = f"清理完成！原有 {old_count} 筆資料，現有 {new_count} 筆資料"
@@ -1596,7 +1197,7 @@ def regenerate_chart():
 
         # 重新生成圖表
         print(f"🔄 強制重新生成近{days}天圖表...")
-        chart_data = rate_manager.create_chart(days)
+        chart_data = manager.create_chart(days, 'TWD', 'HKD')
 
         if chart_data is None:
             return jsonify({
@@ -1607,7 +1208,7 @@ def regenerate_chart():
         img_base64, stats = chart_data
 
         # 獲取數據指紋並保存到緩存（使用 LRU cache）
-        data_fingerprint, data_count = rate_manager.get_data_fingerprint(days)
+        data_fingerprint, data_count = manager.get_data_fingerprint(days)
         
         cache_data = {
             'chart': img_base64,
@@ -1616,7 +1217,7 @@ def regenerate_chart():
             'data_fingerprint': data_fingerprint,
             'data_count': data_count
         }
-        rate_manager.chart_cache.put(cache_key, cache_data)
+        manager.lru_cache.put(cache_key, cache_data)
 
         print(f"✅ 近{days}天圖表強制重新生成完成 (數據點:{data_count})")
 
@@ -1659,7 +1260,7 @@ def sse_events():
 def get_cache_status():
     """獲取快取狀態 API"""
     try:
-        cache_stats = rate_manager.get_cache_stats()
+        cache_stats = manager.get_cache_stats()
 
         return jsonify({
             'success': True,
@@ -1691,13 +1292,13 @@ def clear_cache():
         cache_type = request.json.get('type', 'all') if request.json else 'all'
 
         if cache_type == 'chart':
-            rate_manager.chart_cache.clear()
+            manager.lru_cache.clear()
             message = "圖表快取已清空"
         elif cache_type == 'expired':
-            chart_expired = rate_manager.clear_expired_cache()
+            chart_expired = manager.clear_expired_cache()
             message = f"已清理過期快取：圖表 {chart_expired} 項"
         else:  # 'all'
-            rate_manager.clear_all_cache()
+            manager.clear_all_cache()
             message = "所有快取已清空"
 
         return jsonify({
@@ -1717,7 +1318,7 @@ def warmup_cache():
         data = request.json or {}
         periods = data.get('periods', [7, 30, 90, 180])
 
-        rate_manager.warm_up_cache(periods)
+        manager.warm_up_cache(periods)
 
         return jsonify({
             'success': True,
@@ -1733,7 +1334,7 @@ def warmup_cache():
 def optimize_cache():
     """優化快取性能 API"""
     try:
-        result = rate_manager.optimize_cache_performance()
+        result = manager.optimize_cache_performance()
 
         return jsonify({
             'success': True,
@@ -1750,7 +1351,7 @@ def optimize_cache():
 def get_cache_analytics():
     """獲取快取分析數據 API"""
     try:
-        cache_stats = rate_manager.get_cache_stats()
+        cache_stats = manager.get_cache_stats()
 
         # 計算額外的分析指標
         chart_cache = cache_stats['chart_cache']
@@ -1796,17 +1397,18 @@ def get_cache_analytics():
         }), 500
 
 if __name__ == '__main__':
+    # 伺服器啟動時，清空舊的圖表文件
+    print("🧹 清理舊的圖表文件...")
+    manager._cleanup_charts_directory(manager.charts_dir, max_age_days=0)
+
     # 啟動時強制執行180天資料更新（自動清理舊資料）
-    print("正在檢查本地數據...")
-    rate_manager.update_data(180)  # 強制更新近180天，自動清理舊資料
+    manager.update_data(180)  # 強制更新近180天，自動清理舊資料
 
     # 預生成圖表緩存
-    print("正在預生成圖表緩存...")
-    rate_manager.pregenerate_all_charts()
+    manager.pregenerate_all_charts()
 
     # 自動預熱 TWD-HKD 快取系統
-    print("正在預熱 TWD-HKD 快取系統...")
-    rate_manager.warm_up_cache()
+    manager.warm_up_cache()
 
     # 啟動定時任務背景執行緒
     scheduler_thread = Thread(target=run_scheduler, daemon=True)

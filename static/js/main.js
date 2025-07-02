@@ -10,7 +10,7 @@ let pendingToCurrency = null; // 待確認的目標貨幣
 
 // 頁面載入時自動載入圖表和最新匯率
 document.addEventListener('DOMContentLoaded', function () {
-  loadChart(currentPeriod);
+  fetchChart(currentPeriod);
   loadLatestRate();
 
   // 建立SSE連接
@@ -359,7 +359,7 @@ function updateDisplay() {
   }
 
   // 載入新選擇的圖表
-  loadChart(currentPeriod);
+  fetchChart(currentPeriod);
 }
 
 // 期間按鈕點擊事件
@@ -371,7 +371,7 @@ document.querySelectorAll('.period-btn').forEach(btn => {
     this.classList.add('active');
 
     currentPeriod = parseInt(this.dataset.period);
-    loadChart(currentPeriod);
+    fetchChart(currentPeriod);
   });
 });
 
@@ -384,73 +384,88 @@ function showError(message) {
   }, 5000);
 }
 
-function loadChart(period) {
-  if (isChartLoading) {
-    console.log('🔄 正在載入圖表中，跳過重複請求');
-    return;
-  }
+function fetchChart(period) {
+    console.log(`請求圖表，期間: ${period} 天`);
+    const chartImage = document.getElementById('chartImage');
+    const chartSpinner = document.getElementById('chartSpinner');
+    const statsContainer = document.getElementById('statsContainer');
 
-  isChartLoading = true;
-  updateInteractionStates();
+    // 顯示加載動畫，隱藏舊圖表和統計信息
+    chartSpinner.style.display = 'block';
+    chartImage.style.display = 'none';
+    statsContainer.style.display = 'none';
+    
+    // 從全局變數獲取當前貨幣對
+    const fromCurrency = currentFromCurrency;
+    const toCurrency = currentToCurrency;
 
-  const chartContainer = document.getElementById('chart-container');
-  const loadingMessage = `正在查詢 ${currentFromCurrency} ⇒ ${currentToCurrency} 匯率數據...`;
+    // 發起 API 請求
+    fetch(`/api/chart?period=${period}&from_currency=${fromCurrency}&to_currency=${toCurrency}`)
+        .then(response => {
+            if (!response.ok) {
+                return response.json().then(err => { 
+                    throw new Error(err.error || '伺服器錯誤');
+                });
+            }
+            return response.json();
+        })
+        .then(data => {
+            if (data.chart_url) {
+                // 使用返回的 URL，並添加時間戳以避免快取問題
+                const uniqueUrl = data.chart_url + '?t=' + new Date().getTime();
+                chartImage.src = uniqueUrl;
+                chartImage.style.display = 'block';
 
-  chartContainer.innerHTML = `
-        <div class="chart-loading">
-            <div class="loading-spinner">
-                <div class="loading-text">${loadingMessage}</div>
-            </div>
-        </div>
-    `;
+                // 更新統計數據
+                if (data.stats) {
+                    updateStats(data.stats);
+                    statsContainer.style.display = 'block';
+                }
+            } else if (data.no_data) {
+                handleChartError('數據不足，無法生成圖表。');
+            } else {
+                handleChartError(data.error || '無法載入圖表，請稍後再試。');
+            }
+        })
+        .catch(error => {
+            console.error('獲取圖表時出錯:', error);
+            handleChartError(`獲取圖表失敗: ${error.message}`);
+        })
+        .finally(() => {
+            // 隱藏加載動畫
+            chartSpinner.style.display = 'none';
+        });
+}
 
-  const params = new URLSearchParams({
-    period: period,
-    from_currency: currentFromCurrency,
-    to_currency: currentToCurrency
-  });
+function handleChartError(message) {
+    const chartImage = document.getElementById('chartImage');
+    const statsContainer = document.getElementById('statsContainer');
+    
+    chartImage.style.display = 'none';
+    statsContainer.style.display = 'none';
+    
+    // 可以在這裡顯示一個錯誤消息給用戶
+    const errorDisplay = document.getElementById('chartErrorDisplay'); // 假設你有這個元素
+    if (errorDisplay) {
+        errorDisplay.textContent = message;
+        errorDisplay.style.display = 'block';
+    }
+}
 
-  fetch(`/api/chart?${params.toString()}`)
-    .then(response => response.json())
-    .then(data => {
-      if (data.error) {
-        chartContainer.innerHTML = `
-                    <div class="chart-error">
-                        <div class="error-icon">❌</div>
-                        <h4>載入失敗</h4>
-                        <p>${data.error}</p>
-                    </div>
-                `;
-        return;
-      }
+function updateStats(stats) {
+    if (!stats) return;
 
-      // 顯示圖表
-      chartContainer.innerHTML = `<img src="data:image/png;base64,${data.chart}" alt="匯率走勢圖">`;
+    const maxRateEl = document.getElementById('maxRate');
+    const minRateEl = document.getElementById('minRate');
+    const avgRateEl = document.getElementById('avgRate');
+    const dataPointsEl = document.getElementById('dataPoints');
+    const dateRangeEl = document.getElementById('dateRange');
 
-      // 顯示統計信息
-      if (data.stats) {
-        const precision = getPrecision(data.stats.max_rate);
-        document.getElementById('max-rate').textContent = data.stats.max_rate.toFixed(precision);
-        document.getElementById('min-rate').textContent = data.stats.min_rate.toFixed(precision);
-        document.getElementById('avg-rate').textContent = data.stats.avg_rate.toFixed(precision);
-        document.getElementById('data-points').textContent = data.stats.data_points;
-        document.getElementById('date-range').textContent = data.stats.date_range;
-        document.getElementById('stats').style.display = 'block';
-      }
-    })
-    .catch(error => {
-      chartContainer.innerHTML = `
-                <div class="chart-error">
-                    <div class="error-icon">⚠️</div>
-                    <h4>連接錯誤</h4>
-                    <p>載入圖表時發生錯誤: ${error.message}</p>
-                </div>
-            `;
-    })
-    .finally(() => {
-      isChartLoading = false;
-      updateInteractionStates();
-    });
+    if (maxRateEl) maxRateEl.textContent = `最高匯率: ${stats.max_rate ? stats.max_rate.toFixed(4) : 'N/A'}`;
+    if (minRateEl) minRateEl.textContent = `最低匯率: ${stats.min_rate ? stats.min_rate.toFixed(4) : 'N/A'}`;
+    if (avgRateEl) avgRateEl.textContent = `平均匯率: ${stats.avg_rate ? stats.avg_rate.toFixed(4) : 'N/A'}`;
+    if (dataPointsEl) dataPointsEl.textContent = `數據點: ${stats.data_points || 'N/A'}`;
+    if (dateRangeEl) dateRangeEl.textContent = `數據範圍: ${stats.date_range || 'N/A'}`;
 }
 
 // 根據數值大小決定顯示精度
@@ -688,7 +703,7 @@ function autoRefreshContent(updateData) {
   showAutoUpdateNotification(updateData);
 
   // 刷新圖表
-  loadChart(currentPeriod);
+  fetchChart(currentPeriod);
 
   // 刷新最新匯率
   loadLatestRate();

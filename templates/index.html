@@ -41,7 +41,15 @@
           <div id="error" class="error" style="display: none;"></div>
           <div id="success" class="success" style="display: none;"></div>
           <div id="chart-container" class="chart-container">
-            <!-- 圖表將在這裡顯示 -->
+            <!-- 載入動畫 -->
+            <div id="chartSpinner" class="spinner-container" style="display: none;">
+                <div class="spinner"></div>
+                <p>正在生成圖表...</p>
+            </div>
+            <!-- 圖表圖片 -->
+            <img id="chartImage" src="" alt="匯率走勢圖" style="display: none; max-width: 100%;">
+            <!-- 錯誤訊息 -->
+            <div id="chartErrorDisplay" class="error-message" style="display: none;"></div>
           </div>
         </div>
       </div>
@@ -390,50 +398,34 @@
 
           <!-- 使用提示 -->
           <div class="currency-notice">
-            <small>💡 點擊箭頭可交換貨幣</small>
+            <small>�� 點擊箭頭可交換貨幣</small>
           </div>
         </div>
 
         <!-- 最新匯率區塊 -->
-        <div class="latest-rate-section">
+        <div class="latest-rate-container">
           <div class="latest-rate-header">
-            <h3>💰 最新匯率</h3>
+            <h3>💰 最新匯率 (TWD ⇒ HKD)</h3>
           </div>
           <div id="latest-rate-content" class="latest-rate-content">
-            <!-- 最新匯率將在這裡顯示 -->
+            <!-- 最新匯率將動態載入這裡 -->
           </div>
         </div>
-
-        <!-- 統計信息區塊 -->
-        <div id="stats" class="stats" style="display: none;">
-          <h3>📈 統計信息</h3>
-          <div class="stats-grid">
-            <div class="stat-item">
-              <div class="stat-label">最高匯率</div>
-              <div class="stat-value" id="max-rate">-</div>
+        
+        <!-- 統計數據區 -->
+        <div id="statsContainer" class="stats-container" style="display: none;">
+            <div class="stats-header">
+                <h3>📊 圖表統計</h3>
             </div>
-            <div class="stat-item">
-              <div class="stat-label">最低匯率</div>
-              <div class="stat-value" id="min-rate">-</div>
+            <div class="stats-grid">
+                <p id="maxRate">最高匯率: --</p>
+                <p id="minRate">最低匯率: --</p>
+                <p id="avgRate">平均匯率: --</p>
+                <p id="dataPoints">數據點: --</p>
+                <p id="dateRange" class="full-width">數據範圍: --</p>
             </div>
-            <div class="stat-item">
-              <div class="stat-label">平均匯率</div>
-              <div class="stat-value" id="avg-rate">-</div>
-            </div>
-            <div class="stat-item">
-              <div class="stat-label">數據點數</div>
-              <div class="stat-value" id="data-points">-</div>
-            </div>
-            <div class="stat-item">
-              <div class="stat-label">日期範圍</div>
-              <div class="stat-value" id="date-range">-</div>
-            </div>
-          </div>
         </div>
-
-        <div id="data-status" class="data-status" style="display: none;">
-          <!-- 數據狀態信息 -->
-        </div>
+        
       </div>
     </div>
   </div>
