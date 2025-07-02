@@ -16,8 +16,10 @@ import queue
 import hashlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import concurrent.futures
+import uuid
 
 app = Flask(__name__)
+SERVER_INSTANCE_ID = str(uuid.uuid4())
 
 # LRU Cache 類別
 class LRUCache:
@@ -232,7 +234,7 @@ else:
 plt.rcParams['axes.unicode_minus'] = False
 
 # 數據文件路徑
-DATA_FILE = 'exchange_rates.json'
+DATA_FILE = 'TWD-HKD_180d.json'
 data_lock = Lock()
 
 # SSE 連接管理
@@ -258,6 +260,19 @@ class ExchangeRateManager:
 
         # 初始化 LRU 快取
         self.lru_cache = LRUCache(capacity=60, ttl_seconds=3600)
+
+        # 用於圖表和歷史數據的快取 (24小時 TTL)
+        self.historical_data_cache = LRUCache(capacity=50, ttl_seconds=86400) # 24 hours
+        # 新增：用於今日匯率的快取 (與圖表快取使用相同的 TTL)
+        self.latest_rate_cache = LRUCache(capacity=50, ttl_seconds=86400) # 24 hours
+
+        # 新增：用於協調背景抓取的屬性
+        self.background_executor = ThreadPoolExecutor(max_workers=5, thread_name_prefix='ChartGen')
+        self._active_fetch_lock = Lock()
+        self._active_fetches = set()
+
+        # 主數據鎖
+        self.data_lock = Lock()
 
         # 簡化快取配置
         self.cache_config = {
@@ -520,7 +535,7 @@ class ExchangeRateManager:
         return date_str, None
 
     def get_live_rates_for_period(self, days, from_currency='TWD', to_currency='HKD', max_workers=2):
-        """獲取指定期間的即時匯率數據（並行查詢版本，優先最新數據）"""
+        """獲取指定期間的即時匯率數據（並行查詢版本，並在過程中漸進式生成圖表）"""
         end_date = datetime.now()
         start_date = end_date - timedelta(days=days)
 
@@ -540,7 +555,11 @@ class ExchangeRateManager:
         rates_data = {}
         successful_queries = 0
         failed_queries = 0
-        short_term_chart_generated = False
+        
+        # 用於追蹤已生成的圖表，避免重複生成
+        generated_periods = set()
+        # 定義生成圖表所需的數據點數量門檻 (約略的工作日天數)
+        WORK_DAYS_APPROX = {7: 5, 30: 21, 90: 65, 180: 129}
 
         print(f"🚀 開始並行查詢 {len(query_dates)} 個日期（優先最新數據）...")
 
@@ -552,7 +571,7 @@ class ExchangeRateManager:
                 for date in query_dates
             }
 
-            # 收集結果，並在獲得足夠短期數據時立即生成圖表
+            # 收集結果，並在獲得足夠數據時立即生成圖表
             for future in as_completed(future_to_date):
                 try:
                     date_str, rate = future.result(timeout=30)  # 30秒超時
@@ -560,23 +579,18 @@ class ExchangeRateManager:
                         rates_data[date_str] = rate
                         successful_queries += 1
                         
-                        # 當獲得足夠的最新數據時，嘗試生成短期圖表
-                        if (not short_term_chart_generated and 
-                            successful_queries >= 7 and 
-                            from_currency == 'TWD' and to_currency == 'HKD'):
-                            
-                            # 檢查是否有足夠的最新7天數據
-                            recent_dates = sorted(rates_data.keys(), reverse=True)[:7]
-                            if len(recent_dates) >= 7:
-                                print(f"⚡ 已獲得 {successful_queries} 筆數據，優先生成7天即時圖表...")
+                        # 檢查是否達到生成各週期圖表的門檻
+                        for period, required_points in WORK_DAYS_APPROX.items():
+                            if period not in generated_periods and successful_queries >= required_points:
+                                print(f"⚡ 已獲得 {successful_queries} 筆數據，嘗試生成 {period} 天即時圖表...")
                                 try:
-                                    # 創建7天的即時圖表
-                                    chart_data = self.create_live_chart(7, from_currency, to_currency)
-                                    if chart_data:
-                                        print("✅ 7天即時圖表已優先生成")
-                                        short_term_chart_generated = True
+                                    # 調用 regenerate_chart_data，傳遞已獲取的數據
+                                    chart_info = self.regenerate_chart_data(period, from_currency, to_currency, live_rates_data=rates_data)
+                                    if chart_info:
+                                        print(f"✅ {period} 天即時圖表已優先生成並快取")
+                                        generated_periods.add(period)
                                 except Exception as e:
-                                    print(f"⚠️ 生成7天即時圖表時發生錯誤: {e}")
+                                    print(f"⚠️ 生成 {period} 天即時圖表時發生錯誤: {e}")
                     else:
                         failed_queries += 1
                         
@@ -596,7 +610,7 @@ class ExchangeRateManager:
 
         return rates_data
 
-    def get_rates_for_period(self, days):
+    def get_historical_rates_for_period(self, days):
         """獲取指定天數的匯率數據"""
         end_date = datetime.now()
         start_date = end_date - timedelta(days=days)
@@ -615,40 +629,102 @@ class ExchangeRateManager:
 
         return dates, rates
 
+    def _background_fetch_and_generate(self, from_currency, to_currency):
+        """(在背景執行緒中運行) 抓取所有數據並漸進式生成圖表。"""
+        try:
+            print(f"🌀 背景任務開始：為 {from_currency}-{to_currency} 抓取180天數據。")
+            # 這個函數內部已經包含了漸進式生成圖表的邏輯
+            self.get_live_rates_for_period(180, from_currency, to_currency)
+        except Exception as e:
+            print(f"‼️ 背景抓取時發生錯誤 ({from_currency}-{to_currency}): {e}")
+        finally:
+            with self._active_fetch_lock:
+                self._active_fetches.discard((from_currency, to_currency))
+                print(f"✅ 背景任務完成 ({from_currency}-{to_currency})。")
+
     def create_chart(self, days, from_currency, to_currency):
-        """創建圖表（帶 LRU Cache）"""
-        # 使用 LRU cache 而不是全域 dict
+        """創建圖表（帶 LRU Cache 和背景抓取協調）"""
         cache_key = f"chart_{from_currency}_{to_currency}_{days}"
+
+        # 1. 檢查快取
         cached_info = self.lru_cache.get(cache_key)
+        if cached_info:
+            chart_url = cached_info.get('chart_url', '')
+            if chart_url and os.path.exists(os.path.join(self.charts_dir, os.path.basename(chart_url))):
+                return cached_info
+
+        # --- 快取未命中 ---
         
-        if cached_info is None:
-            # 快取未命中，重新生成
-            chart_data = self.regenerate_chart_data(days, from_currency, to_currency)
-            if chart_data:
-                # 返回新生成的數據
-                return chart_data
-            else:
-                # 生成失敗
-                return None
-        
-        # 快取命中且有效
-        # 檢查快取中的 URL 是否還存在
-        chart_url = cached_info.get('chart_url')
-        if chart_url and os.path.exists(os.path.join(self.charts_dir, os.path.basename(chart_url))):
-            return cached_info
-        else:
-            # 文件丟失，重新生成
+        # 對於 TWD-HKD，邏輯很簡單，直接同步重新生成
+        if from_currency == 'TWD' and to_currency == 'HKD':
             return self.regenerate_chart_data(days, from_currency, to_currency)
 
-    def regenerate_chart_data(self, days, from_currency, to_currency):
-        """內部輔助函數：重新生成圖表並更新快取"""
-        # 獲取數據
-        all_dates, all_rates = self.get_rates_for_period(days)
-        if not all_dates:
-            return None
+        # --- 對於其他貨幣對，需要協調背景抓取 ---
+        with self._active_fetch_lock:
+            if (from_currency, to_currency) not in self._active_fetches:
+                print(f"🌀 {from_currency}-{to_currency} 的背景抓取尚未啟動，現在於背景開始...")
+                self._active_fetches.add((from_currency, to_currency))
+                self.background_executor.submit(self._background_fetch_and_generate, from_currency, to_currency)
+            else:
+                print(f"✅ 預生成: {from_currency}-{to_currency} 的背景抓取已在進行中。")
 
-        # 將 datetime 對象轉換為字串列表
-        all_dates_str = [d.strftime('%Y-%m-%d') for d in all_dates]
+        # 無論是此線程還是其他線程啟動的，現在都等待圖表出現在快取中
+        print(f"⏳ 等待圖表 '{cache_key}' 由背景程序生成...")
+        
+        max_wait_seconds = 60
+        start_time = time.time()
+        
+        while time.time() - start_time < max_wait_seconds:
+            cached_info = self.lru_cache.get(cache_key)
+            if cached_info:
+                print(f"✅ 圖表 '{cache_key}' 已在快取中找到。")
+                return cached_info
+            time.sleep(1) # 等待1秒再試
+
+        print(f"⏰ 等待圖表 '{cache_key}' 超時。")
+        return None
+
+    def regenerate_chart_data(self, days, from_currency, to_currency, live_rates_data=None):
+        """
+        內部輔助函數：重新生成圖表並更新快取。
+        可選擇傳入已獲取的即時數據以避免重複請求。
+        """
+        all_dates_str, all_rates = [], []
+        is_pinned = False
+
+        if from_currency == 'TWD' and to_currency == 'HKD':
+            # 對於 TWD-HKD，從本地數據獲取
+            all_dates_obj, all_rates = self.get_historical_rates_for_period(days)
+            if not all_dates_obj:
+                return None
+            all_dates_str = [d.strftime('%Y-%m-%d') for d in all_dates_obj]
+            is_pinned = True
+        elif live_rates_data:
+            # 如果傳入了預加載的數據，直接使用
+            all_dates_str_sorted = sorted(live_rates_data.keys())
+            
+            # 根據天數篩選數據
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=days)
+            
+            # 從已有的數據中篩選出符合期間的
+            filtered_dates = [d for d in all_dates_str_sorted if start_date <= datetime.strptime(d, '%Y-%m-%d') <= end_date]
+            
+            # 如果篩選後數據不足，則不生成圖表
+            if not filtered_dates:
+                 return None
+
+            all_dates_str = filtered_dates
+            all_rates = [live_rates_data[d] for d in all_dates_str]
+            is_pinned = False
+        else:
+            # 對於其他貨幣對，從即時 API 獲取
+            live_rates_data = self.get_live_rates_for_period(days, from_currency, to_currency)
+            if not live_rates_data:
+                return None
+            all_dates_str = sorted(live_rates_data.keys())
+            all_rates = [live_rates_data[d] for d in all_dates_str]
+            is_pinned = False
 
         # 生成圖表並獲取 URL
         chart_url = self.create_chart_from_data(days, all_dates_str, all_rates, from_currency, to_currency)
@@ -661,7 +737,6 @@ class ExchangeRateManager:
 
         # 存入新數據到快取
         cache_key = f"chart_{from_currency}_{to_currency}_{days}"
-        is_pinned = (from_currency == 'TWD' and to_currency == 'HKD') # 判斷是否為 TWD-HKD 圖表
         new_cache_data = {
             'chart_url': chart_url,
             'stats': stats,
@@ -672,32 +747,6 @@ class ExchangeRateManager:
         self.lru_cache.put(cache_key, new_cache_data, is_pinned=is_pinned)
         
         return new_cache_data
-
-    def create_live_chart(self, days, from_currency='TWD', to_currency='HKD'):
-        """創建即時圖表，返回包含 URL 和統計數據的字典"""
-        live_rates_data = self.get_live_rates_for_period(days, from_currency, to_currency)
-
-        if not live_rates_data:
-            return None
-
-        all_dates_str = sorted(live_rates_data.keys())
-        all_rates = [live_rates_data[d] for d in all_dates_str]
-
-        if not all_dates_str:
-            return None
-        
-        chart_url = self.create_chart_from_data(days, all_dates_str, all_rates, from_currency, to_currency)
-        if not chart_url:
-            return None
-            
-        stats = self._calculate_stats(all_rates, all_dates_str)
-        
-        return {
-            'chart_url': chart_url,
-            'stats': stats,
-            'from_cache': False,
-            'generated_at': datetime.now().isoformat()
-        }
 
     def create_chart_from_data(self, days, all_dates_str, all_rates, from_currency, to_currency):
         """
@@ -821,25 +870,36 @@ class ExchangeRateManager:
         # 返回 Flask 能識別的靜態文件 URL
         return f"/static/{relative_path.replace(os.path.sep, '/')}"
 
-    def pregenerate_all_charts(self):
-        """預生成所有期間的圖表"""
-        periods = [7, 30, 90, 180]
-        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 開始預生成圖表...")
+    def pregenerate_all_charts(self, from_currency='TWD', to_currency='HKD'):
+        """預生成所有期間的圖表，對外部 API 自動採用漸進式生成"""
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 觸發 {from_currency}-{to_currency} 圖表預生成...")
 
-        with ThreadPoolExecutor(max_workers=4) as executor:
-            future_to_period = {executor.submit(self.create_chart, period, 'TWD', 'HKD'): period for period in periods}
-            for future in as_completed(future_to_period):
-                period = future_to_period[future]
-                try:
-                    chart_data = future.result()
-                    if chart_data and chart_data.get('chart_url'):
-                        print(f"  ✅ 預生成 {period} 天圖表成功")
-                    else:
-                        print(f"  ❌ 預生成 {period} 天圖表失敗")
-                except Exception as e:
-                    print(f"  ❌ 預生成 {period} 天圖表時發生錯誤: {e}")
-        
-        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 圖表預生成完成")
+        if from_currency == 'TWD' and to_currency == 'HKD':
+            periods = [7, 30, 90, 180]
+            # TWD-HKD 數據在本地，可以直接並行生成
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                future_to_period = {executor.submit(self.regenerate_chart_data, period, from_currency, to_currency): period for period in periods}
+                for future in as_completed(future_to_period):
+                    period = future_to_period[future]
+                    try:
+                        chart_data = future.result()
+                        if chart_data and chart_data.get('chart_url'):
+                            print(f"  ✅ 預生成 {from_currency}-{to_currency} {period} 天圖表成功")
+                        else:
+                            print(f"  ❌ 預生成 {from_currency}-{to_currency} {period} 天圖表失敗")
+                    except Exception as e:
+                        print(f"  ❌ 預生成 {from_currency}-{to_currency} {period} 天圖表時發生錯誤: {e}")
+        else:
+            # 對於其他貨幣對，只需確保背景任務正在運行
+            with self._active_fetch_lock:
+                if (from_currency, to_currency) not in self._active_fetches:
+                    print(f"🌀 預生成: {from_currency}-{to_currency} 的背景抓取尚未啟動，現在開始...")
+                    self._active_fetches.add((from_currency, to_currency))
+                    self.background_executor.submit(self._background_fetch_and_generate, from_currency, to_currency)
+                else:
+                    print(f"✅ 預生成: {from_currency}-{to_currency} 的背景抓取已在進行中。")
+
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {from_currency}-{to_currency} 圖表預生成任務已觸發。")
 
     @staticmethod
     def _cleanup_charts_directory(directory, max_age_days=1):
@@ -872,8 +932,6 @@ class ExchangeRateManager:
         self._cleanup_charts_directory(self.charts_dir, max_age_days=0)
         print("🗑️ 已清空所有快取和圖表文件")
 
-
-
     def _calculate_stats(self, rates, dates_str):
         if not rates or not dates_str:
             return None
@@ -884,6 +942,80 @@ class ExchangeRateManager:
             'data_points': len(rates),
             'date_range': f"{dates_str[0]} 至 {dates_str[-1]}"
         }
+
+    def get_latest_rate_with_fallback(self, from_currency, to_currency):
+        """
+        獲取最新匯率，針對 TWD-HKD 從本地數據讀取，其他貨幣則從 API 即時抓取。
+        """
+        # --- TWD-HKD: 從本地 JSON 數據獲取 ---
+        if from_currency == 'TWD' and to_currency == 'HKD':
+            app.logger.info(f"從本地數據獲取 {from_currency}-{to_currency} 最新匯率")
+            with self.data_lock:  # 確保線程安全地訪問 self.data
+                if not self.data:
+                    app.logger.warning("本地數據為空，無法提供 TWD-HKD 匯率")
+                    return None
+
+                sorted_dates = self.get_sorted_dates()
+                if not sorted_dates:
+                    app.logger.warning("本地數據中沒有有效日期，無法提供 TWD-HKD 匯率")
+                    return None
+
+                latest_date_str = sorted_dates[-1]
+                latest_data = self.data[latest_date_str]
+                latest_rate = latest_data['rate']
+
+                # 計算趨勢
+                trend = None
+                trend_value = 0
+                if len(sorted_dates) > 1:
+                    previous_date_str = sorted_dates[-2]
+                    previous_rate = self.data[previous_date_str]['rate']
+
+                    trend_value = latest_rate - previous_rate
+                    if trend_value > 0.00001:  # 使用一個小的容差值
+                        trend = 'up'
+                    elif trend_value < -0.00001:
+                        trend = 'down'
+                    else:
+                        trend = 'same'
+
+                return {
+                    'date': latest_date_str,
+                    'rate': latest_rate,
+                    'trend': trend,
+                    'trend_value': trend_value,
+                    'updated_time': latest_data.get('updated', datetime.now().isoformat())
+                }
+
+        # --- 其他貨幣對：從 API 即時抓取 ---
+        app.logger.info(f"嘗試為 {from_currency}-{to_currency} 進行即時抓取")
+
+        current_date = datetime.now()
+        # API在週末可能沒有數據，因此尋找最近的工作日
+        while current_date.weekday() >= 5:  # Saturday=5, Sunday=6
+            current_date -= timedelta(days=1)
+
+        # 此方法處理實際的網路請求
+        rate_data = self.get_exchange_rate(current_date, from_currency, to_currency)
+
+        if not rate_data or 'data' not in rate_data:
+            app.logger.error(f"為 {from_currency}-{to_currency} 進行的即時抓取失敗。回應: {rate_data}")
+            return None
+
+        try:
+            conversion_rate = float(rate_data['data']['conversionRate'])
+
+            # 模仿舊有邏輯：對於即時抓取的匯率不提供趨勢
+            return {
+                'date': current_date.strftime('%Y-%m-%d'),
+                'rate': conversion_rate,
+                'trend': None,
+                'trend_value': 0,
+                'updated_time': datetime.now().isoformat()
+            }
+        except (KeyError, ValueError, TypeError) as e:
+            app.logger.error(f"為 {from_currency}-{to_currency} 解析即時抓取數據時出錯: {e}")
+            return None
 
 # 創建管理器實例
 manager = ExchangeRateManager()
@@ -1006,10 +1138,8 @@ def get_chart():
         days = 7
 
     try:
-        if force_live:
-            chart_data = manager.create_live_chart(days, from_currency, to_currency)
-        else:
-            chart_data = manager.create_chart(days, from_currency, to_currency)
+        # 統一使用 create_chart，由其內部判斷數據來源和快取邏輯
+        chart_data = manager.create_chart(days, from_currency, to_currency)
 
         if chart_data and chart_data.get('chart_url'):
             return jsonify(chart_data)
@@ -1052,101 +1182,59 @@ def data_status():
 
 @app.route('/api/latest_rate')
 def get_latest_rate():
-    """獲取最新匯率API - 支援多幣種"""
+    """獲取最新匯率的API端點，整合了快取和後備機制"""
     from_currency = request.args.get('from_currency', 'TWD')
     to_currency = request.args.get('to_currency', 'HKD')
+    
+    # 建立快取鍵
+    cache_key = (from_currency, to_currency)
+    
+    # 1. 嘗試從快取中獲取數據
+    cached_rate = manager.latest_rate_cache.get(cache_key)
+    if cached_rate:
+        # 在回傳的數據中加入一個標示，表明數據來自快取
+        response_data = cached_rate.copy() # 創建副本以避免修改快取中的原始數據
+        response_data['source'] = 'cache'
+        app.logger.info(f"✅ API LATEST (CACHE): {from_currency}-{to_currency} - 成功從快取提供")
+        return jsonify(response_data)
 
+    # 2. 如果快取未命中，則執行原始的獲取邏輯
+    app.logger.info(f"🔄 API LATEST (FETCH): {from_currency}-{to_currency} - 快取未命中，嘗試從網路獲取...")
+    
+    # 使用 manager 的方法來獲取數據
     try:
-        # 檢查是否為預設貨幣對
-        is_default_pair = (from_currency == 'TWD' and to_currency == 'HKD')
+        latest_data = manager.get_latest_rate_with_fallback(from_currency, to_currency)
+        
+        if latest_data:
+            # 3. 將成功獲取的數據存入快取
+            manager.latest_rate_cache.put(cache_key, latest_data)
+            app.logger.info(f"💾 API LATEST (STORE): {from_currency}-{to_currency} - 成功獲取並存入快取")
 
-        if is_default_pair:
-            # 預設貨幣對從緩存數據獲取
-            if not manager.data:
-                return jsonify({
-                    'success': False,
-                    'message': '無TWD-HKD匯率數據，請先更新數據'
-                }), 400
-
-            # 獲取最新日期的匯率
-            dates = manager.get_sorted_dates()
-            latest_date = dates[-1]
-            latest_data = manager.data[latest_date]
-
-            # 計算 1 TWD 等於多少 HKD
-            twd_to_hkd_rate = latest_data['rate']
-
-            # 計算趨勢（與前一天比較）
-            trend = None
-            trend_value = 0
-            if len(dates) > 1:
-                prev_date = dates[-2]
-                prev_data = manager.data[prev_date]
-                prev_rate = prev_data['rate']
-
-                trend_value = twd_to_hkd_rate - prev_rate
-                if trend_value > 0:
-                    trend = 'up'
-                elif trend_value < 0:
-                    trend = 'down'
-                else:
-                    trend = 'stable'
-
-            return jsonify({
-                'success': True,
-                'data': {
-                    'date': latest_date,
-                    'rate': twd_to_hkd_rate,
-                    'trend': trend,
-                    'trend_value': abs(trend_value),
-                    'updated_time': latest_data.get('updated', ''),
-                    'from_cache': True
-                }
-            })
-
+            # 在回傳的數據中加入一個標示，表明數據是新抓取的
+            response_data = latest_data.copy()
+            response_data['source'] = 'live'
+            return jsonify(response_data)
         else:
-            # 非預設貨幣對獲取即時匯率
-            current_date = datetime.now()
-
-            # 如果是週末，往前找到最近的工作日
-            while current_date.weekday() >= 5:  # Saturday=5, Sunday=6
-                current_date -= timedelta(days=1)
-
-
-            rate_data = manager.get_exchange_rate(current_date, from_currency, to_currency)
-
-            if not rate_data or 'data' not in rate_data:
-                return jsonify({
-                    'success': False,
-                    'message': f'無法獲取 {from_currency} ⇒ {to_currency} 即時匯率'
-                }), 400
-
-            try:
-                conversion_rate = float(rate_data['data']['conversionRate'])
-
-                return jsonify({
-                    'success': True,
-                    'data': {
-                        'date': current_date.strftime('%Y-%m-%d'),
-                        'rate': conversion_rate,
-                        'trend': None,  # 即時匯率不提供趨勢
-                        'trend_value': 0,
-                        'updated_time': datetime.now().isoformat(),
-                        'from_cache': False
-                    }
-                })
-
-            except (KeyError, ValueError) as e:
-                return jsonify({
-                    'success': False,
-                    'message': f'解析 {from_currency} ⇒ {to_currency} 匯率數據失敗: {str(e)}'
-                }), 500
-
+            # 即使有後備機制，也可能完全失敗
+            app.logger.error(f"❌ API LATEST (FAIL): {from_currency}-{to_currency} - 所有獲取方法均失敗")
+            return jsonify({
+                "error": "無法獲取最新匯率，請稍後再試。",
+                "from_currency": from_currency,
+                "to_currency": to_currency
+            }), 500
+            
     except Exception as e:
+        app.logger.error(f"💥 API LATEST (ERROR): 在獲取 {from_currency}-{to_currency} 時發生嚴重錯誤: {e}", exc_info=True)
         return jsonify({
-            'success': False,
-            'message': f'獲取 {from_currency} ⇒ {to_currency} 最新匯率失敗: {str(e)}'
+            "error": f"伺服器在處理請求時發生內部錯誤: {e}",
+            "from_currency": from_currency,
+            "to_currency": to_currency
         }), 500
+
+@app.route('/api/server_status')
+def server_status_api():
+    """提供伺服器實例ID，用於客戶端檢測伺服器重啟"""
+    return jsonify({'server_instance_id': SERVER_INSTANCE_ID})
 
 @app.route('/api/schedule_status')
 def get_schedule_status():
@@ -1237,10 +1325,6 @@ def regenerate_chart():
         except:
             days = 7
 
-        # 先清除該期間的緩存（使用 LRU cache）
-        cache_key = f"chart_TWD_HKD_{days}"
-        # LRU cache 不需要手動刪除，只需重新生成即可覆蓋
-
         # 重新生成圖表
         print(f"🔄 強制重新生成近{days}天圖表...")
         chart_data = manager.create_chart(days, 'TWD', 'HKD')
@@ -1251,26 +1335,24 @@ def regenerate_chart():
                 'message': '無法生成圖表，請檢查數據'
             }), 400
 
-        img_base64, stats = chart_data
-
         # 獲取數據指紋並保存到緩存（使用 LRU cache）
         data_fingerprint, data_count = manager.get_data_fingerprint(days)
         
         cache_data = {
-            'chart': img_base64,
-            'stats': stats,
+            'chart': chart_data['chart_url'],
+            'stats': chart_data['stats'],
             'generated_at': datetime.now().isoformat(),
             'data_fingerprint': data_fingerprint,
             'data_count': data_count
         }
-        manager.lru_cache.put(cache_key, cache_data)
+        manager.lru_cache.put(f"chart_TWD_HKD_{days}", cache_data)
 
         print(f"✅ 近{days}天圖表強制重新生成完成 (數據點:{data_count})")
 
         return jsonify({
             'success': True,
-            'chart': img_base64,
-            'stats': stats,
+            'chart': chart_data['chart_url'],
+            'stats': chart_data['stats'],
             'data_count': data_count,
             'generated_at': datetime.now().isoformat()
         })
@@ -1279,6 +1361,17 @@ def regenerate_chart():
             'success': False,
             'message': f'重新生成圖表失敗: {str(e)}'
         }), 500
+
+@app.route('/api/pregenerate_charts')
+def pregenerate_charts_api():
+    """手動觸發預生成所有期間圖表API"""
+    from_currency = request.args.get('from_currency', 'TWD')
+    to_currency = request.args.get('to_currency', 'HKD')
+    try:
+        manager.pregenerate_all_charts(from_currency, to_currency)
+        return jsonify({'success': True, 'message': f'已觸發 {from_currency}-{to_currency} 圖表預生成'})
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'預生成圖表失敗: {str(e)}'}), 500
 
 @app.route('/api/events')
 def sse_events():
@@ -1302,8 +1395,6 @@ def sse_events():
     response.headers['Access-Control-Allow-Origin'] = '*'
     return response
 
-
-
 if __name__ == '__main__':
     # 伺服器啟動時，清空舊的圖表文件
     print("🧹 清理舊的圖表文件...")
@@ -1314,8 +1405,6 @@ if __name__ == '__main__':
 
     # 預生成圖表緩存
     manager.pregenerate_all_charts()
-
-
 
     # 啟動定時任務背景執行緒
     scheduler_thread = Thread(target=run_scheduler, daemon=True)

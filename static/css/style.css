@@ -219,7 +219,6 @@ body {
     align-self: center;
     font-size: 2rem;
     color: #6c757d;
-    margin: 4px 0;
     cursor: pointer;
     transition: all 0.3s ease;
     user-select: none;
@@ -231,7 +230,6 @@ body {
 
 /* 使用提示 */
 .right-panel .currency-notice {
-    margin-top: 8px;
     padding: 8px 12px;
     background: #f8f9fa;
     border-radius: 6px;

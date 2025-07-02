@@ -9,7 +9,44 @@ let pendingFromCurrency = null; // 待確認的來源貨幣
 let pendingToCurrency = null; // 待確認的目標貨幣
 
 // 頁面載入時自動載入圖表和最新匯率
-document.addEventListener('DOMContentLoaded', function () {
+document.addEventListener('DOMContentLoaded', async function () {
+  try {
+    const response = await fetch('/api/server_status');
+    if (!response.ok) {
+      throw new Error(`Server status check failed: ${response.statusText}`);
+    }
+    const data = await response.json();
+    const currentServerId = data.server_instance_id;
+    const storedServerId = sessionStorage.getItem('serverInstanceId');
+
+    if (currentServerId !== storedServerId) {
+      // Server has restarted. Reset settings.
+      console.log('伺服器已重啟，正在重設貨幣選擇。');
+      sessionStorage.removeItem('fromCurrency');
+      sessionStorage.removeItem('toCurrency');
+      // Store the new server ID
+      sessionStorage.setItem('serverInstanceId', currentServerId);
+    }
+  } catch (error) {
+    console.error('檢查伺服器狀態失敗:', error);
+    // If check fails, do not reset to preserve user selection in case of network issues
+  }
+  // 嘗試從 sessionStorage 讀取儲存的貨幣
+  const savedFromCurrency = sessionStorage.getItem('fromCurrency');
+  const savedToCurrency = sessionStorage.getItem('toCurrency');
+
+  // 如果有儲存的值，則使用它們；否則使用預設值
+  currentFromCurrency = savedFromCurrency || 'TWD';
+  currentToCurrency = savedToCurrency || 'HKD';
+
+  // 將最終的貨幣選擇儲存回 sessionStorage
+  sessionStorage.setItem('fromCurrency', currentFromCurrency);
+  sessionStorage.setItem('toCurrency', currentToCurrency);
+  
+  // 更新 select 元素的值
+  document.getElementById('from-currency').value = currentFromCurrency;
+  document.getElementById('to-currency').value = currentToCurrency;
+
   fetchChart(currentPeriod);
   loadLatestRate();
 
@@ -110,6 +147,10 @@ function swapCurrencies() {
     currentFromCurrency = fromSelect.value;
     currentToCurrency = toSelect.value;
 
+    // 將新狀態存入 sessionStorage
+    sessionStorage.setItem('fromCurrency', currentFromCurrency);
+    sessionStorage.setItem('toCurrency', currentToCurrency);
+
     // 手動更新顯示的 input 值，確保與 select 同步
     const fromOption = fromSelect.options[fromSelect.selectedIndex];
     const toOption = toSelect.options[toSelect.selectedIndex];
@@ -124,11 +165,30 @@ function swapCurrencies() {
     // 觸發後續更新
     updateDisplay();
     loadLatestRate();
+    // 新增：觸發圖表預生成
+    triggerChartPregeneration(currentFromCurrency, currentToCurrency);
   } finally {
     setTimeout(() => {
       isSwapping = false;
     }, 100);
   }
+}
+
+// 觸發後端預生成所有期間圖表
+function triggerChartPregeneration(fromCurrency, toCurrency) {
+  console.log(`觸發後端預生成 ${fromCurrency}-${toCurrency} 圖表...`);
+  fetch(`/api/pregenerate_charts?from_currency=${fromCurrency}&to_currency=${toCurrency}`)
+    .then(response => response.json())
+    .then(data => {
+      if (data.success) {
+        console.log(`✅ 圖表預生成觸發成功: ${data.message}`);
+      } else {
+        console.error(`❌ 圖表預生成觸發失敗: ${data.message}`);
+      }
+    })
+    .catch(error => {
+      console.error('觸發圖表預生成時發生錯誤:', error);
+    });
 }
 
 // 設置單個貨幣組合框（統一搜索下拉選單）
@@ -478,22 +538,30 @@ function getPrecision(value) {
 
 // 載入最新匯率
 function loadLatestRate() {
-  const params = new URLSearchParams({
-    from_currency: currentFromCurrency,
-    to_currency: currentToCurrency
-  });
+  const fromCurrency = document.getElementById('from-currency').value;
+  const toCurrency = document.getElementById('to-currency').value;
 
-  fetch(`/api/latest_rate?${params.toString()}`)
-    .then(response => response.json())
+  fetch(`/api/latest_rate?from_currency=${fromCurrency}&to_currency=${toCurrency}`)
+    .then(response => {
+      if (!response.ok) {
+        // 對於 4xx, 5xx 這類的 HTTP 錯誤，先解析 JSON 以獲取後端錯誤訊息
+        return response.json().then(errorData => {
+          throw new Error(errorData.error || `伺服器錯誤: ${response.status}`);
+        });
+      }
+      return response.json();
+    })
     .then(data => {
-      if (data.success) {
-        displayLatestRate(data.data);
+      // API 回應現在直接是數據物件，或帶有 error 屬性的物件
+      if (data.error) {
+        showRateError(data.error);
       } else {
-        showRateError(data.message);
+        displayLatestRate(data);
       }
     })
     .catch(error => {
-      showRateError('載入最新匯率時發生錯誤: ' + error.message);
+      console.error('載入最新匯率時發生錯誤:', error);
+      showRateError(error.message || '無法連接伺服器或API發生錯誤');
     });
 }
 
@@ -623,7 +691,7 @@ function checkDataStatus() {
                     <div style="background: #f8f9fa; padding: 15px; border-radius: 8px; margin-bottom: 15px;">
                         <p style="margin: 8px 0;"><strong>📈 總記錄數：</strong><span style="color: #28a745; font-weight: bold;">${data.total_records} 筆</span></p>
                         <p style="margin: 8px 0;"><strong>📅 最早日期：</strong>${data.earliest_date || '無數據'}</p>
-                        <p style="margin: 8px 0;"><strong>🗓️ 最新日期：</strong>${data.latest_date || '無數據'}</p>
+                        <p style="margin: 8px 0;"><strong>🗓️ 最新日期：：</strong>${data.latest_date || '無數據'}</p>
                     </div>
 
                     <div style="background: #e3f2fd; padding: 15px; border-radius: 8px; border-left: 4px solid #2E86AB;">
@@ -777,23 +845,32 @@ function clearPendingChanges() {
 
 // 確認貨幣變更
 function confirmCurrencyChanges() {
+  if (pendingFromCurrency === null && pendingToCurrency === null) {
+    return;
+  }
+
   // 應用待確認的變更
   if (pendingFromCurrency !== null) {
     document.getElementById('from-currency').value = pendingFromCurrency;
     currentFromCurrency = pendingFromCurrency;
   }
-  
   if (pendingToCurrency !== null) {
     document.getElementById('to-currency').value = pendingToCurrency;
     currentToCurrency = pendingToCurrency;
   }
   
+  // 將新狀態存入 sessionStorage
+  sessionStorage.setItem('fromCurrency', currentFromCurrency);
+  sessionStorage.setItem('toCurrency', currentToCurrency);
+
   // 清除待確認狀態
   clearPendingChanges();
-  
-  // 更新顯示
+
+  // 更新顯示和數據
   updateDisplay();
   loadLatestRate();
+  // 新增：觸發圖表預生成
+  triggerChartPregeneration(currentFromCurrency, currentToCurrency);
 }
 
 // 設定確認按鈕事件
