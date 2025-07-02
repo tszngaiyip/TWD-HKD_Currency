@@ -22,7 +22,40 @@ document.addEventListener('DOMContentLoaded', function () {
   // 手動更新初始顯示
   updateCurrencyDisplay('from-currency');
   updateCurrencyDisplay('to-currency');
+  
+  // 綁定確認按鈕事件
+  setupConfirmButton();
 });
+
+// 更新互動狀態（載入時禁用/啟用按鈕等）
+function updateInteractionStates() {
+  const isLoading = isChartLoading;
+  
+  // 禁用/啟用期間按鈕
+  const periodButtons = document.querySelectorAll('.period-btn');
+  periodButtons.forEach(btn => {
+    btn.disabled = isLoading;
+  });
+  
+  // 禁用/啟用貨幣選擇器
+  const currencyInputs = document.querySelectorAll('.currency-input');
+  currencyInputs.forEach(input => {
+    input.disabled = isLoading;
+  });
+  
+  // 禁用/啟用交換按鈕
+  const swapButton = document.querySelector('.exchange-arrow');
+  if (swapButton) {
+    swapButton.style.pointerEvents = isLoading ? 'none' : 'auto';
+    swapButton.style.opacity = isLoading ? '0.5' : '1';
+  }
+  
+  // 禁用/啟用狀態按鈕
+  const statusButtons = document.querySelectorAll('.status-btn');
+  statusButtons.forEach(btn => {
+    btn.disabled = isLoading;
+  });
+}
 
 // 設置貨幣選擇器事件（統一搜索下拉選單）
 function setupCurrencySelectors() {
@@ -303,12 +336,6 @@ function setupCurrencyCombobox(selectId) {
   allOptions = getAllOptions();
   updateInputDisplay();
 }
-
-
-
-
-
-
 
 // 更新貨幣顯示（統一函數名）
 function updateCurrencyDisplay(selectId) {
@@ -931,4 +958,46 @@ function warmupCache() {
     .catch(error => {
       showMessage(`預熱快取失敗: ${error.message}`, 'error');
     });
+}
+
+// 清除待確認的貨幣變更
+function clearPendingChanges() {
+  pendingFromCurrency = null;
+  pendingToCurrency = null;
+  
+  // 隱藏確認按鈕
+  document.getElementById('confirm-currency-btn').style.display = 'none';
+  
+  // 重置輸入框顯示為實際選中的值
+  updateCurrencyDisplay('from-currency');
+  updateCurrencyDisplay('to-currency');
+}
+
+// 確認貨幣變更
+function confirmCurrencyChanges() {
+  // 應用待確認的變更
+  if (pendingFromCurrency !== null) {
+    document.getElementById('from-currency').value = pendingFromCurrency;
+    currentFromCurrency = pendingFromCurrency;
+  }
+  
+  if (pendingToCurrency !== null) {
+    document.getElementById('to-currency').value = pendingToCurrency;
+    currentToCurrency = pendingToCurrency;
+  }
+  
+  // 清除待確認狀態
+  clearPendingChanges();
+  
+  // 更新顯示
+  updateDisplay();
+  loadLatestRate();
+}
+
+// 設定確認按鈕事件
+function setupConfirmButton() {
+  const confirmBtn = document.getElementById('confirm-currency-btn');
+  if (confirmBtn) {
+    confirmBtn.addEventListener('click', confirmCurrencyChanges);
+  }
 }

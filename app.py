@@ -236,9 +236,9 @@ data_lock = Lock()
 sse_clients = []
 sse_lock = Lock()
 
-# 預生成圖表緩存
-chart_cache = {}
-chart_cache_lock = Lock()
+# 預生成圖表緩存功能已移到 ExchangeRateManager 的 LRU Cache 中
+# chart_cache = {}  # 已移除，使用 LRU Cache
+# chart_cache_lock = Lock()  # 已移除，LRU Cache 內建線程安全
 
 class ExchangeRateManager:
     def __init__(self):
@@ -248,19 +248,12 @@ class ExchangeRateManager:
         self._pause_lock = Lock()
         self._pause_message_printed = False
 
-        # 初始化 LRU Cache
-        # 快取 API 響應結果，容量100，過期時間30分鐘
-        self.api_cache = LRUCache(capacity=100, ttl_seconds=1800)
+        # 只保留圖表快取，移除API快取
         # 快取圖表數據，容量50，過期時間1小時
         self.chart_cache = LRUCache(capacity=50, ttl_seconds=3600)
 
-        # 快取配置
+        # 簡化快取配置
         self.cache_config = {
-            'api_cache': {
-                'capacity': 100,
-                'ttl_seconds': 1800,
-                'auto_cleanup_interval': 3600
-            },
             'chart_cache': {
                 'capacity': 50,
                 'ttl_seconds': 3600,
@@ -313,42 +306,34 @@ class ExchangeRateManager:
 
     def is_cache_valid(self, days):
         """檢查緩存是否仍然有效"""
-        with chart_cache_lock:
-            if days not in chart_cache:
-                return False, "緩存不存在"
+        # 使用 LRU cache 而不是全域 dict
+        cache_key = f"chart_TWD_HKD_{days}"
+        cached_info = self.chart_cache.get(cache_key)
+        
+        if cached_info is None:
+            return False, "緩存不存在"
 
-            cached_info = chart_cache[days]
+        # 檢查緩存是否有數據指紋
+        if 'data_fingerprint' not in cached_info:
+            return False, "緩存缺少數據指紋"
 
-            # 檢查緩存是否有數據指紋
-            if 'data_fingerprint' not in cached_info:
-                return False, "緩存缺少數據指紋"
+        # 獲取當前數據指紋
+        current_fingerprint, current_data_count = self.get_data_fingerprint(days)
 
-            # 獲取當前數據指紋
-            current_fingerprint, current_data_count = self.get_data_fingerprint(days)
+        # 比較指紋
+        if cached_info['data_fingerprint'] != current_fingerprint:
+            return False, f"數據已更新 (當前{current_data_count}筆數據)"
 
-            # 比較指紋
-            if cached_info['data_fingerprint'] != current_fingerprint:
-                return False, f"數據已更新 (當前{current_data_count}筆數據)"
+        # 檢查緩存時間（可選：如果緩存超過24小時，重新生成）
+        cached_time = datetime.fromisoformat(cached_info['generated_at'])
+        time_diff = datetime.now() - cached_time
+        if time_diff.total_seconds() > 24 * 3600:  # 24小時
+            return False, f"緩存已過期 ({time_diff.days}天{time_diff.seconds//3600}小時前)"
 
-            # 檢查緩存時間（可選：如果緩存超過24小時，重新生成）
-            cached_time = datetime.fromisoformat(cached_info['generated_at'])
-            time_diff = datetime.now() - cached_time
-            if time_diff.total_seconds() > 24 * 3600:  # 24小時
-                return False, f"緩存已過期 ({time_diff.days}天{time_diff.seconds//3600}小時前)"
-
-            return True, "緩存有效"
+        return True, "緩存有效"
 
     def get_exchange_rate(self, date, from_currency='TWD', to_currency='HKD'):
         """獲取指定日期的匯率"""
-        # 生成快取鍵
-        cache_key = f"{date.strftime('%Y-%m-%d')}_{from_currency}_{to_currency}"
-
-        # 嘗試從快取中獲取
-        cached_result = self.api_cache.get(cache_key)
-        if cached_result is not None:
-            print(f"🟢 從快取獲取 {date.strftime('%Y-%m-%d')} 的匯率數據")
-            return cached_result
-
         with self._pause_lock:
             if self._network_paused:
                 if time.time() < self._pause_until:
@@ -392,10 +377,6 @@ class ExchangeRateManager:
                                   timeout=(5, 15))  # 連接超時5秒，讀取超時15秒
             response.raise_for_status()
             data = response.json()
-
-            # 將結果存入快取
-            self.api_cache.put(cache_key, data)
-            print(f"💾 已將 {date.strftime('%Y-%m-%d')} 的匯率數據存入快取")
 
             return data
         except requests.exceptions.RequestException as e:
@@ -583,7 +564,16 @@ class ExchangeRateManager:
         cached_chart = self.chart_cache.get(cache_key)
         if cached_chart is not None:
             print(f"🟢 從快取獲取 {days} 天的圖表數據")
-            return cached_chart
+            # 確保返回統一格式 (img_base64, stats, generated_at)
+            if len(cached_chart) == 3:
+                return cached_chart
+            elif len(cached_chart) == 2:
+                # 兼容舊格式，添加生成時間
+                img_base64, stats = cached_chart
+                generated_at = datetime.now().isoformat()
+                return (img_base64, stats, generated_at)
+            else:
+                return cached_chart
 
         print(f"🔍 生成新的 {days} 天圖表")
         dates, rates = self.get_rates_for_period(days)
@@ -701,8 +691,11 @@ class ExchangeRateManager:
             'date_range': f"{dates[0].strftime('%Y-%m-%d')} 至 {dates[-1].strftime('%Y-%m-%d')}"
         } if rates else None
 
-        # 將圖表結果存入快取
-        chart_result = (img_base64, stats)
+        # 生成時間
+        generated_at = datetime.now().isoformat()
+
+        # 將圖表結果存入快取，統一使用三元組格式
+        chart_result = (img_base64, stats, generated_at)
         self.chart_cache.put(cache_key, chart_result)
         print(f"💾 已將 {days} 天的圖表數據存入快取")
 
@@ -1013,14 +1006,16 @@ class ExchangeRateManager:
                     # 獲取數據指紋
                     data_fingerprint, data_count = self.get_data_fingerprint(period)
 
-                    with chart_cache_lock:
-                        chart_cache[period] = {
-                            'chart': img_base64,
-                            'stats': stats,
-                            'generated_at': datetime.now().isoformat(),
-                            'data_fingerprint': data_fingerprint,
-                            'data_count': data_count
-                        }
+                    # 存入 LRU cache
+                    cache_key = f"chart_TWD_HKD_{period}"
+                    cache_data = {
+                        'chart': img_base64,
+                        'stats': stats,
+                        'generated_at': datetime.now().isoformat(),
+                        'data_fingerprint': data_fingerprint,
+                        'data_count': data_count
+                    }
+                    self.chart_cache.put(cache_key, cache_data)
 
                     print(f"  ✅ 近{period}天圖表生成完成 (數據點: {stats['data_points']})")
                 else:
@@ -1032,27 +1027,23 @@ class ExchangeRateManager:
 
     def clear_expired_cache(self):
         """清理過期的快取項目"""
-        api_expired = self.api_cache.clear_expired()
         chart_expired = self.chart_cache.clear_expired()
 
-        if api_expired > 0 or chart_expired > 0:
-            print(f"🧹 快取清理完成：API快取過期 {api_expired} 項，圖表快取過期 {chart_expired} 項")
+        if chart_expired > 0:
+            print(f"🧹 快取清理完成：圖表快取過期 {chart_expired} 項")
 
-        return api_expired, chart_expired
+        return chart_expired
 
     def get_cache_stats(self):
         """獲取快取統計資訊"""
-        api_stats = self.api_cache.get_stats()
         chart_stats = self.chart_cache.get_stats()
 
         return {
-            'api_cache': api_stats,
             'chart_cache': chart_stats
         }
 
     def clear_all_cache(self):
         """清空所有快取"""
-        self.api_cache.clear()
         self.chart_cache.clear()
         print("🗑️ 已清空所有快取")
 
@@ -1067,29 +1058,6 @@ class ExchangeRateManager:
         from_currency, to_currency = 'TWD', 'HKD'
         print(f"正在預熱 {from_currency} → {to_currency} 數據...")
 
-        # 預熱 API 快取 - 為每個時間期間預載數據
-        for period in periods:
-            cache_key = f"{from_currency}_{to_currency}_{period}"
-            try:
-                # 檢查快取中是否已存在
-                if not self.api_cache.get(cache_key):
-                    # 獲取並快取數據
-                    all_dates, all_rates = self.get_rates_for_period(period)
-                    if all_dates and all_rates:
-                        cache_data = {
-                            'dates': all_dates,
-                            'rates': all_rates,
-                            'period': period,
-                            'data_count': len(all_dates)
-                        }
-                        # 設定為永不過期，確保 TWD-HKD 數據持續保存
-                        self.api_cache.put(cache_key, cache_data, ttl=False)
-                        print(f"  ✅ {period}天期間 API 快取已載入 ({len(all_dates)} 個數據點)")
-                    else:
-                        print(f"  ❌ {period}天期間無法獲取數據")
-            except Exception as e:
-                print(f"  ❌ {period}天期間預熱失敗: {e}")
-
         # 預熱圖表快取
         print("正在預熱圖表快取...")
         for period in periods:
@@ -1101,26 +1069,17 @@ class ExchangeRateManager:
 
         cache_stats = self.get_cache_stats()
         print(f"🎉 TWD-HKD 快取預熱完成！")
-        print(f"  API 快取：{cache_stats['api_cache']['total_items']} 項")
         print(f"  圖表快取：{cache_stats['chart_cache']['total_items']} 項")
 
     def optimize_cache_performance(self):
         """優化快取性能"""
         # 清理過期項目
-        api_expired, chart_expired = self.clear_expired_cache()
+        chart_expired = self.clear_expired_cache()
 
         # 檢查快取使用率
-        api_stats = self.api_cache.get_stats()
         chart_stats = self.chart_cache.get_stats()
 
         optimizations = []
-
-        # API 快取優化建議
-        if api_stats['usage_ratio'] > 0.9:
-            optimizations.append("API 快取使用率過高，建議增加容量")
-
-        if api_stats['expired_items'] > api_stats['valid_items'] * 0.3:
-            optimizations.append("API 快取過期項目過多，建議調整 TTL")
 
         # 圖表快取優化建議
         if chart_stats['usage_ratio'] > 0.9:
@@ -1131,11 +1090,9 @@ class ExchangeRateManager:
 
         return {
             'expired_cleaned': {
-                'api': api_expired,
                 'chart': chart_expired
             },
             'current_stats': {
-                'api': api_stats,
                 'chart': chart_stats
             },
             'optimizations': optimizations
@@ -1274,14 +1231,21 @@ def get_chart():
         # 如果全部都已快取，直接返回使用者請求的那個
         cached_chart_data = rate_manager.chart_cache.get(cache_keys[days])
         if cached_chart_data:
-            img_base64, stats, generated_at = cached_chart_data
+            # 統一快取數據格式：應該是 (img_base64, stats, generated_at) 的三元組
+            if len(cached_chart_data) == 3:
+                img_base64, stats, generated_at = cached_chart_data
+            else:
+                # 兼容舊格式 (img_base64, stats)
+                img_base64, stats = cached_chart_data
+                generated_at = datetime.now().isoformat()
+            
             return jsonify({
                 'chart': img_base64,
                 'stats': stats,
                 'from_cache': True,
                 'cache_reason': '伺服器快取命中 (全部已預熱)',
                 'generated_at': generated_at,
-                'data_count': stats.get('data_points', 0)
+                'data_count': stats.get('data_points', 0) if stats else 0
             })
 
     # --- 快取不完整，觸發一次性數據獲取和生成流程 ---
@@ -1322,7 +1286,7 @@ def get_chart():
                     if chart_data:
                         img_base64, stats = chart_data
                         generated_at = datetime.now().isoformat()
-                        # 存入快取
+                        # 統一存入快取格式：(img_base64, stats, generated_at)
                         rate_manager.chart_cache.put(cache_keys[period], (img_base64, stats, generated_at))
                         print(f"  ✅ 已生成並快取 {period} 天圖表")
                 except Exception as e:
@@ -1331,13 +1295,20 @@ def get_chart():
         # 3. 返回使用者最初請求的圖表
         final_chart_data = rate_manager.chart_cache.get(cache_keys[days])
         if final_chart_data:
-            img_base64, stats, generated_at = final_chart_data
+            # 統一處理快取數據格式
+            if len(final_chart_data) == 3:
+                img_base64, stats, generated_at = final_chart_data
+            else:
+                # 兼容舊格式
+                img_base64, stats = final_chart_data
+                generated_at = datetime.now().isoformat()
+                
             return jsonify({
                 'chart': img_base64,
                 'stats': stats,
                 'from_cache': False, # 標記為新生成
                 'generated_at': generated_at,
-                'data_count': stats.get('data_points', 0)
+                'data_count': stats.get('data_points', 0) if stats else 0
             })
         else:
             # 如果連使用者請求的圖表都生成失敗，返回錯誤
@@ -1562,10 +1533,9 @@ def regenerate_chart():
         except:
             days = 7
 
-        # 先清除該期間的緩存
-        with chart_cache_lock:
-            if days in chart_cache:
-                del chart_cache[days]
+        # 先清除該期間的緩存（使用 LRU cache）
+        cache_key = f"chart_TWD_HKD_{days}"
+        # LRU cache 不需要手動刪除，只需重新生成即可覆蓋
 
         # 重新生成圖表
         print(f"🔄 強制重新生成近{days}天圖表...")
@@ -1579,17 +1549,17 @@ def regenerate_chart():
 
         img_base64, stats = chart_data
 
-        # 獲取數據指紋並保存到緩存
+        # 獲取數據指紋並保存到緩存（使用 LRU cache）
         data_fingerprint, data_count = rate_manager.get_data_fingerprint(days)
-
-        with chart_cache_lock:
-            chart_cache[days] = {
-                'chart': img_base64,
-                'stats': stats,
-                'generated_at': datetime.now().isoformat(),
-                'data_fingerprint': data_fingerprint,
-                'data_count': data_count
-            }
+        
+        cache_data = {
+            'chart': img_base64,
+            'stats': stats,
+            'generated_at': datetime.now().isoformat(),
+            'data_fingerprint': data_fingerprint,
+            'data_count': data_count
+        }
+        rate_manager.chart_cache.put(cache_key, cache_data)
 
         print(f"✅ 近{days}天圖表強制重新生成完成 (數據點:{data_count})")
 
@@ -1637,13 +1607,6 @@ def get_cache_status():
         return jsonify({
             'success': True,
             'data': {
-                'api_cache': {
-                    'total_items': cache_stats['api_cache']['total_items'],
-                    'valid_items': cache_stats['api_cache']['valid_items'],
-                    'expired_items': cache_stats['api_cache']['expired_items'],
-                    'capacity': cache_stats['api_cache']['capacity'],
-                    'usage_ratio': round(cache_stats['api_cache']['usage_ratio'] * 100, 2)
-                },
                 'chart_cache': {
                     'total_items': cache_stats['chart_cache']['total_items'],
                     'valid_items': cache_stats['chart_cache']['valid_items'],
@@ -1652,9 +1615,9 @@ def get_cache_status():
                     'usage_ratio': round(cache_stats['chart_cache']['usage_ratio'] * 100, 2)
                 },
                 'summary': {
-                    'total_cache_items': cache_stats['api_cache']['total_items'] + cache_stats['chart_cache']['total_items'],
-                    'total_valid_items': cache_stats['api_cache']['valid_items'] + cache_stats['chart_cache']['valid_items'],
-                    'total_expired_items': cache_stats['api_cache']['expired_items'] + cache_stats['chart_cache']['expired_items']
+                    'total_cache_items': cache_stats['chart_cache']['total_items'],
+                    'total_valid_items': cache_stats['chart_cache']['valid_items'],
+                    'total_expired_items': cache_stats['chart_cache']['expired_items']
                 }
             }
         })
@@ -1670,15 +1633,12 @@ def clear_cache():
     try:
         cache_type = request.json.get('type', 'all') if request.json else 'all'
 
-        if cache_type == 'api':
-            rate_manager.api_cache.clear()
-            message = "API 快取已清空"
-        elif cache_type == 'chart':
+        if cache_type == 'chart':
             rate_manager.chart_cache.clear()
             message = "圖表快取已清空"
         elif cache_type == 'expired':
-            api_expired, chart_expired = rate_manager.clear_expired_cache()
-            message = f"已清理過期快取：API {api_expired} 項，圖表 {chart_expired} 項"
+            chart_expired = rate_manager.clear_expired_cache()
+            message = f"已清理過期快取：圖表 {chart_expired} 項"
         else:  # 'all'
             rate_manager.clear_all_cache()
             message = "所有快取已清空"
@@ -1736,25 +1696,21 @@ def get_cache_analytics():
         cache_stats = rate_manager.get_cache_stats()
 
         # 計算額外的分析指標
-        api_cache = cache_stats['api_cache']
         chart_cache = cache_stats['chart_cache']
 
         analytics = {
             'performance': {
-                'api_hit_rate': api_cache.get('hit_rate', 0),
                 'chart_hit_rate': chart_cache.get('hit_rate', 0),
-                'overall_efficiency': (api_cache.get('hit_rate', 0) + chart_cache.get('hit_rate', 0)) / 2
+                'overall_efficiency': chart_cache.get('hit_rate', 0)
             },
             'usage': {
-                'api_usage_percentage': api_cache['usage_ratio'] * 100,
                 'chart_usage_percentage': chart_cache['usage_ratio'] * 100,
-                'total_cache_items': api_cache['total_items'] + chart_cache['total_items'],
-                'total_capacity': api_cache['capacity'] + chart_cache['capacity']
+                'total_cache_items': chart_cache['total_items'],
+                'total_capacity': chart_cache['capacity']
             },
             'health': {
-                'api_expired_ratio': api_cache['expired_items'] / max(api_cache['total_items'], 1) * 100,
                 'chart_expired_ratio': chart_cache['expired_items'] / max(chart_cache['total_items'], 1) * 100,
-                'overall_health': 'good' if (api_cache['expired_items'] + chart_cache['expired_items']) < 10 else 'warning'
+                'overall_health': 'good' if chart_cache['expired_items'] < 10 else 'warning'
             },
             'recommendations': []
         }
@@ -1762,9 +1718,6 @@ def get_cache_analytics():
         # 生成建議
         if analytics['performance']['overall_efficiency'] < 50:
             analytics['recommendations'].append('快取命中率偏低，建議檢查 TTL 設定')
-
-        if analytics['usage']['api_usage_percentage'] > 90:
-            analytics['recommendations'].append('API 快取使用率過高，建議增加容量')
 
         if analytics['usage']['chart_usage_percentage'] > 90:
             analytics['recommendations'].append('圖表快取使用率過高，建議增加容量')
