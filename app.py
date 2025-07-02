@@ -602,7 +602,7 @@ class ExchangeRateManager:
             if date_str in self.data:
                 dates.append(current_date)
                 # 顯示 1/rate，即 1 港幣等於多少台幣
-                rates.append(1 / self.data[date_str]['rate'])
+                rates.append(self.data[date_str]['rate'])
             current_date += timedelta(days=1)
 
         return dates, rates
@@ -698,10 +698,12 @@ class ExchangeRateManager:
         if not all_dates_str or not all_rates:
             return None
 
+        # 生成可讀性更高且唯一的檔名
+        latest_date_str = all_dates_str[-1] if all_dates_str else "nodate"
         data_str = f"{days}-{from_currency}-{to_currency}-{''.join(all_dates_str)}-{''.join(map(str, all_rates))}"
         chart_hash = hashlib.md5(data_str.encode('utf-8')).hexdigest()
-        filename = f"chart_{chart_hash}.png"
-        
+        filename = f"chart_{from_currency}-{to_currency}_{days}d_{latest_date_str}_{chart_hash[:8]}.png"
+
         relative_path = os.path.join('charts', filename)
         full_path = os.path.join(self.charts_dir, filename)
 
@@ -725,13 +727,13 @@ class ExchangeRateManager:
             ax.scatter([max_date], [max_rate], color='#D0021B', s=80, zorder=5, label=f'最高: {max_rate:.4f}')
             ax.scatter([min_date], [min_rate], color='#417505', s=80, zorder=5, label=f'最低: {min_rate:.4f}')
 
-        ax.set_title(f'{from_currency} 到 {to_currency} 的匯率趨勢圖 ({days} 天)', fontsize=18, color='white', pad=20)
-        ax.set_xlabel('日期', fontsize=12, color='white')
-        ax.set_ylabel('匯率', fontsize=12, color='white')
+        ax.set_title(f'{from_currency} 到 {to_currency} 的匯率趨勢圖 ({days} 天)', fontsize=18, color='#333333', pad=20)
+        ax.set_xlabel('日期', fontsize=12, color='#333333')
+        ax.set_ylabel('匯率', fontsize=12, color='#333333')
 
-        ax.grid(True, which='both', linestyle='--', linewidth=0.5, color='#555555')
-        ax.tick_params(axis='x', colors='white', labelsize=10, rotation=45)
-        ax.tick_params(axis='y', colors='white', labelsize=10)
+        ax.grid(True, which='both', linestyle='--', linewidth=0.5, color='#DDDDDD')
+        ax.tick_params(axis='x', colors='#333333', labelsize=10, rotation=45)
+        ax.tick_params(axis='y', colors='#333333', labelsize=10)
 
         ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
         ax.xaxis.set_major_locator(mdates.AutoDateLocator())
@@ -916,7 +918,7 @@ def scheduled_update():
                 # 發送SSE事件通知前端更新
                 send_sse_event('rate_updated', {
                     'date': today_str,
-                    'rate': 1 / conversion_rate,  # 轉換為 1 HKD = ? TWD
+                    'rate': conversion_rate,  # 保持原始匯率
                     'updated_time': datetime.now().isoformat(),
                     'message': f'成功獲取 {today_str} 的匯率資料'
                 })

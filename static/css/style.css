@@ -77,7 +77,7 @@ body {
 }
 
 /* 貨幣選擇器 - 重新設計為右側面板樣式 */
-.currency-selector {
+.right-panel .currency-selector {
     background: white;
     border-radius: 8px;
     border: 1px solid #dce4ec;
@@ -86,7 +86,7 @@ body {
     margin-bottom: 16px;
 }
 
-.currency-selector h3 {
+.right-panel .currency-selector h3 {
     margin: 0 0 12px 0;
     font-size: 1rem;
     color: #2E86AB;
@@ -96,19 +96,19 @@ body {
 }
 
 /* 貨幣輸入組合 */
-.currency-inputs {
+.right-panel .currency-inputs {
     display: flex;
     flex-direction: column;
     gap: 12px;
     margin-bottom: 12px;
 }
 
-.currency-input-group {
+.right-panel .currency-input-group {
     display: flex;
     flex-direction: column;
 }
 
-.currency-input-group label {
+.right-panel .currency-input-group label {
     font-size: 0.8rem;
     font-weight: 600;
     color: #495057;
@@ -118,14 +118,14 @@ body {
 }
 
 /* 貨幣搜索包裝器 */
-.currency-search-wrapper {
+.right-panel .currency-search-wrapper {
     position: relative;
     display: flex;
     align-items: center;
 }
 
 /* 主要輸入框 - 看起來像下拉選單 */
-.currency-input {
+.right-panel .currency-input {
     width: 100%;
     padding: 8px 40px 8px 12px;
     border: 2px solid #dce4ec;
@@ -137,22 +137,22 @@ body {
     cursor: pointer;
 }
 
-.currency-input[readonly] {
+.right-panel .currency-input[readonly] {
     background: #f8f9fa;
     cursor: pointer;
 }
 
-.currency-input[readonly]:hover {
+.right-panel .currency-input[readonly]:hover {
     background: #e9ecef;
     border-color: #2E86AB;
 }
 
-.currency-input:not([readonly]) {
+.right-panel .currency-input:not([readonly]) {
     cursor: text;
     background: white;
 }
 
-.currency-input:focus {
+.right-panel .currency-input:focus {
     outline: none;
     border-color: #2E86AB;
     box-shadow: 0 0 0 2px rgba(46, 134, 171, 0.1);
@@ -160,7 +160,7 @@ body {
 }
 
 /* 下拉箭頭 */
-.currency-dropdown-arrow {
+.right-panel .currency-dropdown-arrow {
     position: absolute;
     right: 12px;
     top: 50%;
@@ -175,22 +175,22 @@ body {
     user-select: none;
 }
 
-.currency-search-wrapper:hover .currency-dropdown-arrow {
+.right-panel .currency-search-wrapper:hover .currency-dropdown-arrow {
     color: #2E86AB;
 }
 
-.currency-search-wrapper.dropdown-active .currency-dropdown-arrow {
+.right-panel .currency-search-wrapper.dropdown-active .currency-dropdown-arrow {
     transform: translateY(-50%) rotate(180deg);
     color: #2E86AB;
 }
 
 /* 隱藏原生select */
-.currency-select-hidden {
+.right-panel .currency-select-hidden {
     display: none;
 }
 
 /* 交換箭頭 */
-.exchange-arrow {
+.right-panel .exchange-arrow {
     align-self: center;
     font-size: 2rem;
     color: #6c757d;
@@ -205,7 +205,7 @@ body {
 }
 
 /* 使用提示 */
-.currency-notice {
+.right-panel .currency-notice {
     margin-top: 8px;
     padding: 8px 12px;
     background: #f8f9fa;
@@ -213,7 +213,7 @@ body {
     border-left: 3px solid #2E86AB;
 }
 
-.currency-notice small {
+.right-panel .currency-notice small {
     color: #6c757d;
     font-size: 0.75rem;
     line-height: 1.4;
@@ -492,7 +492,7 @@ body {
 }
 
 /* 最新匯率區塊 */
-.latest-rate-section {
+.right-panel .latest-rate-section {
     background: white;
     border: 1px solid #e9ecef;
     border-radius: 8px;
@@ -500,7 +500,7 @@ body {
     flex-shrink: 0;
 }
 
-.latest-rate-header {
+.right-panel .latest-rate-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -509,7 +509,7 @@ body {
     border-bottom: 1px solid #e9ecef;
 }
 
-.latest-rate-header h3 {
+.right-panel .latest-rate-header h3 {
     font-size: 0.95rem;
     color: #495057;
     margin: 0;
@@ -518,36 +518,36 @@ body {
     gap: 6px;
 }
 
-.latest-rate-content {
+.right-panel .latest-rate-content {
     min-height: 60px;
     display: flex;
     align-items: center;
     justify-content: center;
 }
 
-.rate-display {
+.right-panel .rate-display {
     text-align: center;
     width: 100%;
 }
 
-.rate-main {
+.right-panel .rate-main {
     margin-bottom: 8px;
 }
 
-.rate-value {
+.right-panel .rate-value {
     font-size: 1.4rem;
     font-weight: bold;
     color: #2E86AB;
     margin-bottom: 4px;
 }
 
-.rate-label {
+.right-panel .rate-label {
     font-size: 0.8rem;
     color: #6c757d;
     margin-bottom: 6px;
 }
 
-.rate-info {
+.right-panel .rate-info {
     display: flex;
     justify-content: space-between;
     align-items: center;
@@ -556,34 +556,34 @@ body {
     margin-top: 6px;
 }
 
-.rate-date {
+.right-panel .rate-date {
     font-style: italic;
 }
 
-.rate-trend {
+.right-panel .rate-trend {
     display: flex;
     align-items: center;
     gap: 4px;
     font-weight: 500;
 }
 
-.rate-trend.up {
+.right-panel .rate-trend.up {
     color: #28a745;
 }
 
-.rate-trend.down {
+.right-panel .rate-trend.down {
     color: #dc3545;
 }
 
-.rate-trend.stable {
+.right-panel .rate-trend.stable {
     color: #6c757d;
 }
 
-.trend-icon {
+.right-panel .trend-icon {
     font-size: 0.8rem;
 }
 
-.rate-error {
+.right-panel .rate-error {
     color: #dc3545;
     font-size: 0.85rem;
     text-align: center;
@@ -591,7 +591,7 @@ body {
 }
 
 /* 統計信息區塊 */
-.stats {
+.right-panel .stats {
     background: white;
     border: 1px solid #e9ecef;
     border-radius: 8px;
@@ -599,20 +599,20 @@ body {
     flex-shrink: 0;
 }
 
-.stats h3 {
+.right-panel .stats h3 {
     font-size: 0.95rem;
     color: #495057;
     margin-bottom: 10px;
     text-align: center;
 }
 
-.stats-grid {
+.right-panel .stats-grid {
     display: grid;
     grid-template-columns: 1fr;
     gap: 8px;
 }
 
-.stat-item {
+.right-panel .stat-item {
     display: flex;
     justify-content: space-between;
     align-items: center;
@@ -621,19 +621,27 @@ body {
     border-radius: 4px;
 }
 
-.stat-label {
+.right-panel .stat-label {
     font-size: 0.8rem;
     color: #6c757d;
     font-weight: 500;
 }
 
-.stat-value {
+.right-panel .stat-value {
     font-size: 0.85rem;
     font-weight: bold;
     color: #2E86AB;
     text-align: right;
     word-break: break-all;
     max-width: 50%;
+}
+
+.right-panel .stats-container {
+    background: white;
+    border: 1px solid #e9ecef;
+    border-radius: 8px;
+    padding: 16px;
+    margin-top: 16px;
 }
 
 /* 錯誤和成功消息 */
@@ -886,7 +894,7 @@ body {
 }
 
 /* 貨幣搜索下拉列表樣式 */
-.currency-dropdown {
+.right-panel .currency-dropdown {
     position: absolute;
     top: 100%;
     left: 0;
@@ -907,11 +915,11 @@ body {
     box-shadow: 0 4px 12px rgba(0,0,0,0.1);
 }
 
-.currency-dropdown.show {
+.right-panel .currency-dropdown.show {
     display: block;
 }
 
-.currency-dropdown-item {
+.right-panel .currency-dropdown-item {
     padding: 10px 12px;
     cursor: pointer;
     font-size: 0.85rem;
@@ -920,44 +928,44 @@ body {
     white-space: nowrap;
 }
 
-.currency-dropdown-item:last-child {
+.right-panel .currency-dropdown-item:last-child {
     border-bottom: none;
 }
 
-.currency-dropdown-item:hover {
+.right-panel .currency-dropdown-item:hover {
     background: #f8f9fa;
 }
 
-.currency-dropdown-item.selected {
+.right-panel .currency-dropdown-item.selected {
     background-color: #2E86AB;
     color: white;
     font-weight: 500;
 }
 
-.currency-dropdown-item.highlighted {
+.right-panel .currency-dropdown-item.highlighted {
     background: #e9ecef;
 }
 
-.currency-dropdown.open {
+.right-panel .currency-dropdown.open {
     display: flex;
     opacity: 1;
     transform: translateY(0);
     pointer-events: auto;
 }
 
-.currency-search-wrapper.dropdown-active .currency-input {
+.right-panel .currency-search-wrapper.dropdown-active .currency-input {
     border-color: #2E86AB;
     border-bottom-left-radius: 0;
     border-bottom-right-radius: 0;
 }
 
-.currency-selector-footer {
+.right-panel .currency-selector-footer {
     display: flex;
     justify-content: flex-end;
     margin-top: 16px;
 }
 
-.confirm-btn {
+.right-panel .confirm-btn {
     background-color: #2E86AB;
     color: white;
     border: none;
@@ -970,19 +978,19 @@ body {
     display: none; /* Initially hidden */
 }
 
-.confirm-btn:hover {
+.right-panel .confirm-btn:hover {
     background-color: #256a8a;
     transform: translateY(-2px);
     box-shadow: 0 4px 8px rgba(0,0,0,0.1);
 }
 
-.confirm-btn:active {
+.right-panel .confirm-btn:active {
     transform: translateY(0);
     box-shadow: none;
 }
 
 /* 搜索提示 */
-.currency-search-hint {
+.right-panel .currency-search-hint {
     position: absolute;
     top: 100%;
     left: 0;
@@ -998,12 +1006,12 @@ body {
     display: none;
 }
 
-.currency-search-hint.show {
+.right-panel .currency-search-hint.show {
     display: block;
 }
 
 /* 圖表載入進度顯示器 */
-.chart-loading-progress {
+.right-panel .chart-loading-progress {
     background: white;
     border: 1px solid #dce4ec;
     border-radius: 12px;
@@ -1013,7 +1021,7 @@ body {
     animation: slideIn 0.3s ease-out;
 }
 
-.progress-header {
+.right-panel .progress-header {
     background: linear-gradient(135deg, #2E86AB 0%, #A23B72 100%);
     color: white;
     padding: 20px;
@@ -1021,7 +1029,7 @@ body {
     position: relative;
 }
 
-.progress-header h4 {
+.right-panel .progress-header h4 {
     margin: 0 0 8px 0;
     font-size: 1.2rem;
     font-weight: 600;
@@ -1031,14 +1039,14 @@ body {
     gap: 10px;
 }
 
-.progress-header p {
+.right-panel .progress-header p {
     margin: 0;
     font-size: 0.95rem;
     opacity: 0.9;
 }
 
 /* 主進度區域 */
-.progress-main {
+.right-panel .progress-main {
     padding: 24px 20px;
     display: flex;
     flex-direction: column;
@@ -1047,7 +1055,7 @@ body {
 }
 
 /* 進度總覽 */
-.progress-overview {
+.right-panel .progress-overview {
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -1056,20 +1064,20 @@ body {
     max-width: 320px;
 }
 
-.progress-spinner-container {
+.right-panel .progress-spinner-container {
     position: relative;
     display: flex;
     align-items: center;
     justify-content: center;
 }
 
-.progress-spinner {
+.right-panel .progress-spinner {
     width: 80px;
     height: 80px;
     position: relative;
 }
 
-.progress-spinner div {
+.right-panel .progress-spinner div {
     position: absolute;
     width: 64px;
     height: 64px;
@@ -1078,16 +1086,16 @@ body {
     animation: spinProgress 2s linear infinite;
 }
 
-.progress-spinner div:nth-child(1) {
+.right-panel .progress-spinner div:nth-child(1) {
     border-top: 8px solid #2E86AB;
 }
 
-.progress-spinner div:nth-child(2) {
+.right-panel .progress-spinner div:nth-child(2) {
     border-top: 8px solid #A23B72;
     animation-delay: -0.5s;
 }
 
-.progress-spinner div:nth-child(3) {
+.right-panel .progress-spinner div:nth-child(3) {
     border-top: 8px solid #28a745;
     animation-delay: -1s; 
 }
@@ -1097,7 +1105,7 @@ body {
     100% { transform: rotate(360deg); }
 }
 
-.progress-counter {
+.right-panel .progress-counter {
     position: absolute;
     top: 50%;
     left: 50%;
@@ -1108,30 +1116,30 @@ body {
     text-align: center;
 }
 
-.progress-main-bar {
+.right-panel .progress-main-bar {
     width: 100%;
     margin: 10px 0;
 }
 
-.progress-main-bar .progress-bar-container {
+.right-panel .progress-main-bar .progress-bar-container {
     width: 100%;
     height: 12px;
     border-radius: 6px;
 }
 
-.progress-main-bar .progress-bar {
+.right-panel .progress-main-bar .progress-bar {
     height: 12px;
     border-radius: 6px;
 }
 
-.progress-main-text {
+.right-panel .progress-main-text {
     text-align: center;
     font-size: 1rem;
     font-weight: 500;
     color: #495057;
 }
 
-.progress-main-subtext {
+.right-panel .progress-main-subtext {
     text-align: center;
     font-size: 0.85rem;
     color: #6c757d;
@@ -1139,12 +1147,12 @@ body {
 }
 
 /* 詳細進度列表 */
-.progress-list {
+.right-panel .progress-list {
     padding: 0 20px 20px 20px;
     max-width: 100%;
 }
 
-.progress-list h5 {
+.right-panel .progress-list h5 {
     margin: 0 0 15px 0;
     font-size: 0.95rem;
     color: #495057;
@@ -1152,7 +1160,7 @@ body {
     font-weight: 600;
 }
 
-.progress-item {
+.right-panel .progress-item {
     display: flex;
     align-items: center;
     background: #f8f9fa;
@@ -1161,11 +1169,11 @@ body {
     position: relative;
 }
 
-.progress-item:last-child {
+.right-panel .progress-item:last-child {
     margin-bottom: 0;
 }
 
-.progress-icon {
+.right-panel .progress-icon {
     font-size: 1.1rem;
     margin-right: 12px;
     min-width: 24px;
@@ -1173,14 +1181,14 @@ body {
     transition: all 0.3s ease;
 }
 
-.progress-text {
+.right-panel .progress-text {
     flex: 1;
     font-weight: 500;
     color: #495057;
     font-size: 0.9rem;
 }
 
-.progress-status {
+.right-panel .progress-status {
     font-size: 0.8rem;
     color: #6c757d;
     font-weight: 500;
@@ -1190,45 +1198,45 @@ body {
 }
 
 /* 進度項目狀態樣式 */
-.progress-item.loading {
+.right-panel .progress-item.loading {
     border-left-color: #ffc107;
     background: #fff9c4;
 }
 
-.progress-item.loading .progress-icon {
+.right-panel .progress-item.loading .progress-icon {
     color: #ffc107;
     animation: progressPulse 1.5s ease-in-out infinite;
 }
 
-.progress-item.loading .progress-status {
+.right-panel .progress-item.loading .progress-status {
     background: rgba(255, 193, 7, 0.2);
     color: #856404;
 }
 
-.progress-item.success {
+.right-panel .progress-item.success {
     border-left-color: #28a745;
     background: #d1e7dd;
 }
 
-.progress-item.success .progress-icon {
+.right-panel .progress-item.success .progress-icon {
     color: #28a745;
 }
 
-.progress-item.success .progress-status {
+.right-panel .progress-item.success .progress-status {
     background: rgba(40, 167, 69, 0.2);
     color: #155724;
 }
 
-.progress-item.error {
+.right-panel .progress-item.error {
     border-left-color: #dc3545;
     background: #f8d7da;
 }
 
-.progress-item.error .progress-icon {
+.right-panel .progress-item.error .progress-icon {
     color: #dc3545;
 }
 
-.progress-item.error .progress-status {
+.right-panel .progress-item.error .progress-status {
     background: rgba(220, 53, 69, 0.2);
     color: #721c24;
 }

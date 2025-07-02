@@ -543,12 +543,15 @@ function displayLatestRate(rateData) {
     return;
   }
 
-  // 針對 TWD-HKD 使用 1/rate 顯示
-  const isDefaultPair = (currentFromCurrency === 'TWD' && currentToCurrency === 'HKD');
-  const displayRate = isDefaultPair ? (1 / rateData.rate) : rateData.rate;
-  const rateLabel = isDefaultPair ?
-    `1 ${currentToCurrency} = ? ${currentFromCurrency}` :
-    `1 ${currentFromCurrency} = ? ${currentToCurrency}`;
+  const isTwdHkd = currentFromCurrency === 'TWD' && currentToCurrency === 'HKD';
+  const displayRate = rateData.rate;
+  const rateLabel = `1 ${currentFromCurrency} = ? ${currentToCurrency}`;
+  
+  let hint = '';
+  if (isTwdHkd) {
+    const invertedRate = 1 / rateData.rate;
+    hint = `<span class="rate-hint"> (${invertedRate.toFixed(getPrecision(invertedRate))})</span>`;
+  }
 
   rateContent.innerHTML = `
         <div class="rate-display">
@@ -561,7 +564,7 @@ function displayLatestRate(rateData) {
             </div>
 
             <div class="rate-main">
-                <div class="rate-value">${displayRate.toFixed(getPrecision(displayRate))}</div>
+                <div class="rate-value">${displayRate.toFixed(getPrecision(displayRate))}${hint}</div>
                 <div class="rate-label">${rateLabel}</div>
             </div>
 
