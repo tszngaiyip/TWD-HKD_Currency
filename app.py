@@ -868,26 +868,7 @@ class ExchangeRateManager:
         self._cleanup_charts_directory(self.charts_dir, max_age_days=0)
         print("🗑️ 已清空所有快取和圖表文件")
 
-    def warm_up_cache(self, periods=None):
-        """預熱快取，生成指定期間的圖表"""
-        if periods is None:
-            periods = [7, 30, 90, 180]
-        print(f"🔥 預熱快取中，期間: {periods}...")
-        self.pregenerate_all_charts()
 
-    def optimize_cache_performance(self):
-        """分析並優化快取性能"""
-        stats = self.get_cache_stats().get('chart_cache', {})
-        usage_ratio = stats.get('usage_ratio', 0)
-        hit_rate = stats.get('hit_rate', 0)
-        optimizations = []
-        if usage_ratio > 0.9:
-            optimizations.append("快取使用率過高，考慮增加容量。")
-        if hit_rate < 50:
-            optimizations.append(f"快取命中率較低 ({hit_rate:.2f}%)，考慮預熱更多常用項目。")
-        if not optimizations:
-            optimizations.append("快取性能良好。")
-        return optimizations
 
     def _calculate_stats(self, rates, dates_str):
         if not rates or not dates_str:
@@ -1317,145 +1298,7 @@ def sse_events():
     response.headers['Access-Control-Allow-Origin'] = '*'
     return response
 
-@app.route('/api/cache_status')
-def get_cache_status():
-    """獲取快取狀態 API"""
-    try:
-        cache_stats = manager.get_cache_stats()
 
-        return jsonify({
-            'success': True,
-            'data': {
-                'chart_cache': {
-                    'total_items': cache_stats['chart_cache']['total_items'],
-                    'valid_items': cache_stats['chart_cache']['valid_items'],
-                    'expired_items': cache_stats['chart_cache']['expired_items'],
-                    'capacity': cache_stats['chart_cache']['capacity'],
-                    'usage_ratio': round(cache_stats['chart_cache']['usage_ratio'] * 100, 2)
-                },
-                'summary': {
-                    'total_cache_items': cache_stats['chart_cache']['total_items'],
-                    'total_valid_items': cache_stats['chart_cache']['valid_items'],
-                    'total_expired_items': cache_stats['chart_cache']['expired_items']
-                }
-            }
-        })
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'message': f'獲取快取狀態失敗: {str(e)}'
-        }), 500
-
-@app.route('/api/clear_cache', methods=['POST'])
-def clear_cache():
-    """清空快取 API"""
-    try:
-        cache_type = request.json.get('type', 'all') if request.json else 'all'
-
-        if cache_type == 'chart':
-            manager.lru_cache.clear()
-            message = "圖表快取已清空"
-        elif cache_type == 'expired':
-            chart_expired = manager.clear_expired_cache()
-            message = f"已清理過期快取：圖表 {chart_expired} 項"
-        else:  # 'all'
-            manager.clear_all_cache()
-            message = "所有快取已清空"
-
-        return jsonify({
-            'success': True,
-            'message': message
-        })
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'message': f'清空快取失敗: {str(e)}'
-        }), 500
-
-@app.route('/api/cache_warmup', methods=['POST'])
-def warmup_cache():
-    """預熱 TWD-HKD 快取 API"""
-    try:
-        data = request.json or {}
-        periods = data.get('periods', [7, 30, 90, 180])
-
-        manager.warm_up_cache(periods)
-
-        return jsonify({
-            'success': True,
-            'message': 'TWD-HKD 快取預熱完成'
-        })
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'message': f'快取預熱失敗: {str(e)}'
-        }), 500
-
-@app.route('/api/cache_optimize', methods=['POST'])
-def optimize_cache():
-    """優化快取性能 API"""
-    try:
-        result = manager.optimize_cache_performance()
-
-        return jsonify({
-            'success': True,
-            'data': result,
-            'message': '快取優化完成'
-        })
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'message': f'快取優化失敗: {str(e)}'
-        }), 500
-
-@app.route('/api/cache_analytics')
-def get_cache_analytics():
-    """獲取快取分析數據 API"""
-    try:
-        cache_stats = manager.get_cache_stats()
-
-        # 計算額外的分析指標
-        chart_cache = cache_stats['chart_cache']
-
-        analytics = {
-            'performance': {
-                'chart_hit_rate': chart_cache.get('hit_rate', 0),
-                'overall_efficiency': chart_cache.get('hit_rate', 0)
-            },
-            'usage': {
-                'chart_usage_percentage': chart_cache['usage_ratio'] * 100,
-                'total_cache_items': chart_cache['total_items'],
-                'total_capacity': chart_cache['capacity']
-            },
-            'health': {
-                'chart_expired_ratio': chart_cache['expired_items'] / max(chart_cache['total_items'], 1) * 100,
-                'overall_health': 'good' if chart_cache['expired_items'] < 10 else 'warning'
-            },
-            'recommendations': []
-        }
-
-        # 生成建議
-        if analytics['performance']['overall_efficiency'] < 50:
-            analytics['recommendations'].append('快取命中率偏低，建議檢查 TTL 設定')
-
-        if analytics['usage']['chart_usage_percentage'] > 90:
-            analytics['recommendations'].append('圖表快取使用率過高，建議增加容量')
-
-        if analytics['health']['overall_health'] == 'warning':
-            analytics['recommendations'].append('快取健康度不佳，建議清理過期項目')
-
-        return jsonify({
-            'success': True,
-            'data': {
-                'cache_stats': cache_stats,
-                'analytics': analytics
-            }
-        })
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'message': f'獲取快取分析失敗: {str(e)}'
-        }), 500
 
 if __name__ == '__main__':
     # 伺服器啟動時，清空舊的圖表文件
@@ -1468,8 +1311,7 @@ if __name__ == '__main__':
     # 預生成圖表緩存
     manager.pregenerate_all_charts()
 
-    # 自動預熱 TWD-HKD 快取系統
-    manager.warm_up_cache()
+
 
     # 啟動定時任務背景執行緒
     scheduler_thread = Thread(target=run_scheduler, daemon=True)
