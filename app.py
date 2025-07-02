@@ -397,58 +397,89 @@ class ExchangeRateManager:
             return None
 
     def update_data(self, days=180):  # 默認更新近180天數據
-        """更新匯率數據，只保留近180天資料"""
+        """數據更新：從最新日期開始補齊到今天，清理舊數據"""
         end_date = datetime.now()
         start_date = end_date - timedelta(days=days)
-
-        updated_count = 0
-
-        # 建立新的資料字典，只包含需要的日期範圍
-        new_data = {}
-
-        current_date = start_date
-        while current_date <= end_date:
-            date_str = current_date.strftime('%Y-%m-%d')
-
-            # 如果舊資料中已有這個日期，直接複製
-            if date_str in self.data:
-                new_data[date_str] = self.data[date_str]
-                current_date += timedelta(days=1)
-                continue
-
-            # 獲取新資料
-            print(f"獲取 {date_str} 的數據...")
-            data = self.get_exchange_rate(current_date)
-
-            if data and 'data' in data:
-                try:
-                    conversion_rate = float(data['data']['conversionRate'])
-                    new_data[date_str] = {
-                        'rate': conversion_rate,
-                        'updated': datetime.now().isoformat()
-                    }
-                    updated_count += 1
-                    print(f"  匯率: {conversion_rate}")
-                except (KeyError, ValueError) as e:
-                    print(f"  解析數據時發生錯誤: {e}")
-
-            current_date += timedelta(days=1)
-
-        # 替換成新的資料（自動移除超過180天的舊資料）
+        
+        print(f"🔍 開始極簡數據更新（從最新日期補齊到今天）...")
+        
+        # 第一步：清理超過180天的舊數據
         old_count = len(self.data)
-        self.data = new_data
-        new_count = len(self.data)
-        removed_count = old_count - new_count + updated_count
-
+        cleaned_data = {}
+        removed_count = 0
+        
+        for date_str, data_entry in self.data.items():
+            date_obj = datetime.strptime(date_str, '%Y-%m-%d')
+            if date_obj >= start_date:
+                cleaned_data[date_str] = data_entry
+            else:
+                removed_count += 1
+        
+        if removed_count > 0:
+            print(f"🗑️ 清理了 {removed_count} 筆超過 {days} 天的舊數據")
+            self.data = cleaned_data
+        
+        # 第二步：找到數據中的最新日期
+        if self.data:
+            latest_date_str = max(self.data.keys())
+            latest_date = datetime.strptime(latest_date_str, '%Y-%m-%d')
+            print(f"📅 數據中最新日期：{latest_date_str}")
+        else:
+            # 如果沒有數據，從180天前開始
+            latest_date = start_date - timedelta(days=1)
+            print(f"📅 數據為空，從 {days} 天前開始獲取")
+        
+        # 第三步：從最新日期的下一天開始獲取到今天
+        start_fetch_date = latest_date + timedelta(days=1)
+        updated_count = 0
+        
+        if start_fetch_date <= end_date:
+            print(f"🚀 從 {start_fetch_date.strftime('%Y-%m-%d')} 獲取到 {end_date.strftime('%Y-%m-%d')}")
+            
+            current_date = start_fetch_date
+            while current_date <= end_date:
+                date_str = current_date.strftime('%Y-%m-%d')
+                
+                # 跳過週末
+                if current_date.weekday() < 5:  # Monday=0, Friday=4
+                    print(f"  🔍 獲取 {date_str} 的數據...")
+                    data = self.get_exchange_rate(current_date)
+                    
+                    if data and 'data' in data:
+                        try:
+                            conversion_rate = float(data['data']['conversionRate'])
+                            self.data[date_str] = {
+                                'rate': conversion_rate,
+                                'updated': datetime.now().isoformat()
+                            }
+                            updated_count += 1
+                            print(f"    💱 成功：{conversion_rate}")
+                        except (KeyError, ValueError) as e:
+                            print(f"    ❌ 解析失敗：{e}")
+                    else:
+                        print(f"    ⚠️ 無法獲取 {date_str} 的數據")
+                else:
+                    print(f"  ⏭️ 跳過週末：{date_str}")
+                
+                current_date += timedelta(days=1)
+        else:
+            print("✅ 數據已是最新狀態，無需API請求")
+        
+        # 第四步：保存更新結果
         if updated_count > 0 or removed_count > 0:
             self.save_data()
+            
+            summary_parts = []
             if updated_count > 0:
-                print(f"成功更新 {updated_count} 筆數據")
+                summary_parts.append(f"新增 {updated_count} 筆最新數據")
             if removed_count > 0:
-                print(f"已移除 {removed_count} 筆超過{days}天的舊資料")
+                summary_parts.append(f"清理 {removed_count} 筆舊數據")
+            
+            print(f"💾 極簡更新完成：{', '.join(summary_parts)}")
+            print(f"📊 當前數據：{len(self.data)} 筆（{old_count} → {len(self.data)}）")
         else:
-            print("沒有新數據需要更新")
-
+            print("✅ 數據已是最新狀態，無需更新")
+        
         return updated_count
 
     def _fetch_single_rate(self, date, from_currency, to_currency, max_retries=1):
@@ -482,43 +513,66 @@ class ExchangeRateManager:
         return date_str, None
 
     def get_live_rates_for_period(self, days, from_currency='TWD', to_currency='HKD', max_workers=2):
-        """獲取指定期間的即時匯率數據（並行查詢版本，已加入速率限制）"""
+        """獲取指定期間的即時匯率數據（並行查詢版本，優先最新數據）"""
         end_date = datetime.now()
         start_date = end_date - timedelta(days=days)
 
-        # 收集所有需要查詢的日期（跳過週末）
+        # 收集所有需要查詢的日期（跳過週末），從最新日期開始
         query_dates = []
-        current_date = start_date
+        current_date = end_date
 
-        while current_date <= end_date:
+        while current_date >= start_date:
             # 跳過週末（Saturday=5, Sunday=6）
             if current_date.weekday() < 5:
                 query_dates.append(current_date)
-            current_date += timedelta(days=1)
+            current_date -= timedelta(days=1)
 
+        # query_dates 現在是從新到舊的順序，這有助於優先處理最新數據
         actual_workers = min(max_workers, len(query_dates))
 
         rates_data = {}
         successful_queries = 0
         failed_queries = 0
+        short_term_chart_generated = False
+
+        print(f"🚀 開始並行查詢 {len(query_dates)} 個日期（優先最新數據）...")
 
         # 使用線程池進行並行查詢
         with ThreadPoolExecutor(max_workers=actual_workers) as executor:
-            # 提交所有查詢任務
+            # 提交所有查詢任務，優先提交最新日期
             future_to_date = {
                 executor.submit(self._fetch_single_rate, date, from_currency, to_currency): date
                 for date in query_dates
             }
 
-            # 收集結果
+            # 收集結果，並在獲得足夠短期數據時立即生成圖表
             for future in as_completed(future_to_date):
                 try:
                     date_str, rate = future.result(timeout=30)  # 30秒超時
                     if rate is not None:
                         rates_data[date_str] = rate
                         successful_queries += 1
+                        
+                        # 當獲得足夠的最新數據時，嘗試生成短期圖表
+                        if (not short_term_chart_generated and 
+                            successful_queries >= 7 and 
+                            from_currency == 'TWD' and to_currency == 'HKD'):
+                            
+                            # 檢查是否有足夠的最新7天數據
+                            recent_dates = sorted(rates_data.keys(), reverse=True)[:7]
+                            if len(recent_dates) >= 7:
+                                print(f"⚡ 已獲得 {successful_queries} 筆數據，優先生成7天即時圖表...")
+                                try:
+                                    # 創建7天的即時圖表
+                                    chart_data = self.create_live_chart(7, from_currency, to_currency)
+                                    if chart_data:
+                                        print("✅ 7天即時圖表已優先生成")
+                                        short_term_chart_generated = True
+                                except Exception as e:
+                                    print(f"⚠️ 生成7天即時圖表時發生錯誤: {e}")
                     else:
                         failed_queries += 1
+                        
                 except concurrent.futures.TimeoutError:
                     date = future_to_date[future]
                     print(f"⏰ {date.strftime('%Y-%m-%d')}: 查詢超時")
@@ -990,8 +1044,8 @@ class ExchangeRateManager:
 
         print(f"✅ 成功獲取 {len(all_dates)} 個數據點")
 
-        # 按時間週期從短到長生成圖表（讓使用者更快看到短期圖表）
-        needed_periods.sort()
+        # 優化策略：按時間週期從短到長生成圖表（優先短期，讓使用者更快看到7天、30天圖表）
+        needed_periods.sort()  # [7, 30, 90, 180] 的順序
 
         for period in needed_periods:
             try:
@@ -1048,7 +1102,7 @@ class ExchangeRateManager:
         print("🗑️ 已清空所有快取")
 
     def warm_up_cache(self, periods=None):
-        """預熱 TWD-HKD 快取系統"""
+        """預熱 TWD-HKD 快取系統（優先短期圖表）"""
         if periods is None:
             periods = [7, 30, 90, 180]
 
@@ -1058,10 +1112,13 @@ class ExchangeRateManager:
         from_currency, to_currency = 'TWD', 'HKD'
         print(f"正在預熱 {from_currency} → {to_currency} 數據...")
 
-        # 預熱圖表快取
-        print("正在預熱圖表快取...")
-        for period in periods:
+        # 預熱圖表快取（從短期到長期，優先短期圖表）
+        print("正在預熱圖表快取（優先短期圖表）...")
+        periods_sorted = sorted(periods)  # 確保從短期到長期
+        
+        for period in periods_sorted:
             try:
+                print(f"  🔄 正在預熱 {period} 天圖表...")
                 self.create_chart(period)
                 print(f"  ✅ {period}天圖表快取已載入")
             except Exception as e:
