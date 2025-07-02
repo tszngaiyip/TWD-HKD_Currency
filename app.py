@@ -29,8 +29,9 @@ class LRUCache:
         """
         self.capacity = capacity
         self.ttl_seconds = ttl_seconds
-        self.cache = {}  # key -> {'value': value, 'timestamp': timestamp}
+        self.cache = {}  # key -> {'value': value, 'timestamp': timestamp, 'ttl': ttl, 'is_pinned': bool}
         self.access_order = []  # 存儲存取順序
+        self.pinned_keys = set() # 存儲不應被淘汰的鍵
         self.lock = Lock()
 
         # 統計資訊
@@ -63,30 +64,34 @@ class LRUCache:
 
             return entry['value']
 
-    def put(self, key, value, ttl=None):
-        """設定快取值，ttl=None 表示使用默認 TTL，ttl=False 表示永不過期"""
+    def put(self, key, value, ttl=None, is_pinned=False):
+        """設定快取值，ttl=None 表示使用默認 TTL，ttl=False 表示永不過期，is_pinned=True 表示永不淘汰"""
         with self.lock:
             current_time = time.time()
 
             if ttl is False:
-                # 永不過期
                 actual_ttl = None
             elif ttl is None:
-                # 使用默認 TTL
                 actual_ttl = self.ttl_seconds
             else:
-                # 使用指定的 TTL
                 actual_ttl = ttl
+
+            if is_pinned:
+                self.pinned_keys.add(key)
+            else:
+                self.pinned_keys.discard(key) # 如果之前是固定的，現在不是了，就移除
 
             if key in self.cache:
                 # 更新現有項目
                 self.cache[key] = {
                     'value': value,
                     'timestamp': current_time,
-                    'ttl': actual_ttl
+                    'ttl': actual_ttl,
+                    'is_pinned': is_pinned
                 }
                 # 更新存取順序
-                self.access_order.remove(key)
+                if key in self.access_order:
+                    self.access_order.remove(key)
                 self.access_order.append(key)
             else:
                 # 新增項目
@@ -98,23 +103,20 @@ class LRUCache:
                 self.cache[key] = {
                     'value': value,
                     'timestamp': current_time,
-                    'ttl': actual_ttl
+                    'ttl': actual_ttl,
+                    'is_pinned': is_pinned
                 }
                 self.access_order.append(key)
 
     def _evict_lru_item(self):
-        """淘汰最久未使用的項目（但跳過永不過期的項目）"""
-        for key in self.access_order:
-            entry = self.cache[key]
-            # 如果項目不是永不過期的，則可以淘汰
-            if entry.get('ttl') is not None:
+        """淘汰最久未使用的項目（但跳過永不過期或被固定的項目）"""
+        for key in list(self.access_order): # 遍歷副本以允許修改原列表
+            entry = self.cache.get(key)
+            if entry and not entry.get('is_pinned', False) and entry.get('ttl') is not None:
                 self._remove_key(key)
                 return
-
-        # 如果所有項目都是永不過期的，移除最舊的一個
-        if self.access_order:
-            lru_key = self.access_order[0]
-            self._remove_key(lru_key)
+        # 如果所有項目都是永不過期或被固定的，或者沒有可淘汰的項目，則不執行任何操作
+        # 這裡不需要額外的處理，因為如果所有項目都是固定的，就不應該淘汰
 
     def _remove_key(self, key):
         """移除指定的鍵（內部方法，不加鎖）"""
@@ -122,6 +124,7 @@ class LRUCache:
             del self.cache[key]
             if key in self.access_order:
                 self.access_order.remove(key)
+            self.pinned_keys.discard(key) # 確保從固定鍵集合中移除
 
     def clear_expired(self):
         """清理過期項目（跳過永不過期的項目）"""
@@ -254,12 +257,12 @@ class ExchangeRateManager:
             os.makedirs(self.charts_dir)
 
         # 初始化 LRU 快取
-        self.lru_cache = LRUCache(capacity=50, ttl_seconds=3600)
+        self.lru_cache = LRUCache(capacity=60, ttl_seconds=3600)
 
         # 簡化快取配置
         self.cache_config = {
             'chart_cache': {
-                'capacity': 50,
+                'capacity': 60,
                 'ttl_seconds': 3600,
                 'auto_cleanup_interval': 3600
             },
@@ -658,6 +661,7 @@ class ExchangeRateManager:
 
         # 存入新數據到快取
         cache_key = f"chart_{from_currency}_{to_currency}_{days}"
+        is_pinned = (from_currency == 'TWD' and to_currency == 'HKD') # 判斷是否為 TWD-HKD 圖表
         new_cache_data = {
             'chart_url': chart_url,
             'stats': stats,
@@ -665,7 +669,7 @@ class ExchangeRateManager:
             'data_fingerprint': data_fingerprint,
             'data_count': data_count
         }
-        self.lru_cache.put(cache_key, new_cache_data)
+        self.lru_cache.put(cache_key, new_cache_data, is_pinned=is_pinned)
         
         return new_cache_data
 
