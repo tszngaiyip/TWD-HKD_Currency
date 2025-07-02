@@ -402,25 +402,30 @@ class ExchangeRateManager:
 
     def update_data(self, days=180):  # 默認更新近180天數據
         """數據更新：從最新日期開始補齊到今天，清理舊數據"""
-        end_date = datetime.now()
+        end_date = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
         start_date = end_date - timedelta(days=days)
         
         print(f"🔍 開始極簡數據更新（從最新日期補齊到今天）...")
         
-        # 第一步：清理超過180天的舊數據
+        # 第一步：找出並清理180天以外的舊數據
         old_count = len(self.data)
         cleaned_data = {}
         removed_count = 0
+        removed_dates = []
         
         for date_str, data_entry in self.data.items():
             date_obj = datetime.strptime(date_str, '%Y-%m-%d')
+            # 保留從 start_date 開始的180天數據（包含 start_date）
             if date_obj >= start_date:
+                # 保留180天內的數據
                 cleaned_data[date_str] = data_entry
             else:
+                # 刪除 start_date 之前的數據
+                removed_dates.append(date_str)
                 removed_count += 1
         
         if removed_count > 0:
-            print(f"🗑️ 清理了 {removed_count} 筆超過 {days} 天的舊數據")
+            print(f"🗑️ 清理了 {removed_count} 筆180天以外的舊數據")
             self.data = cleaned_data
         
         # 第二步：找到數據中的最新日期
