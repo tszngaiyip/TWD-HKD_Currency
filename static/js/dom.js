@@ -17,15 +17,15 @@ export function displayLatestRate(data) {
   const formatDate = dateStr => new Date(dateStr).toLocaleDateString('zh-TW', { year: 'numeric', month: 'long', day: 'numeric' });
   // 趨勢顯示
   const getTrendDisplay = (trend, trendValue) => {
-    if (!trend || trend === 'stable') return { icon: '➡️', text: '持平', class: 'stable' };
-    if (trend === 'up') return { icon: '📈', text: `上漲 ${trendValue.toFixed(4)}`, class: 'up' };
-    return { icon: '📉', text: `下跌 ${trendValue.toFixed(4)}`, class: 'down' };
+    if (!trend || trend === 'stable') return { icon: '➡️', text: '不變', class: 'stable' };
+    if (trend === 'up') return { icon: '📈', text: `漲價 ${trendValue.toFixed(4)}`, class: 'up' };
+    return { icon: '📉', text: `降價 ${Math.abs(trendValue).toFixed(4)}`, class: 'down' };
   };
   const trendInfo = getTrendDisplay(data.trend, data.trend_value);
   const rateValue = data.rate;
   // TWD⇔HKD反算提示
   let hint = '';
-  if (data.from_currency === 'TWD' && data.to_currency === 'HKD') {
+  if (data.buy_currency === 'TWD' && data.sell_currency === 'HKD') {
     const inverted = 1 / data.rate;
     hint = `<span class="rate-hint">(${inverted.toFixed(4)})</span>`;
   }
@@ -40,13 +40,12 @@ export function displayLatestRate(data) {
       </div>
       <div class="rate-main">
         <div class="rate-value">${rateValue.toFixed(4)}${hint}</div>
-        <div class="rate-label">1 ${data.from_currency} = ? ${data.to_currency}</div>
+        <div class="rate-label">1 ${data.buy_currency} = ? ${data.sell_currency}</div>
       </div>
       <div class="rate-info">
-        <div class="rate-date">🔄 最後更新</div>
-        <div style="font-size:0.8rem;color:#999;">
-          ${data.updated_time ? new Date(data.updated_time).toLocaleString('zh-TW') : '未知'}
-        </div>
+        ${data.is_best
+          ? `<div class="rate-best">目前匯率是近${data.best_period}天最低</div>`
+          : `<div class="rate-lowest">近${data.lowest_period}天最低: ${data.lowest_rate.toFixed(4)}</div>`}
       </div>
     </div>
   `;
@@ -86,4 +85,4 @@ export function updateGridStats(stats) {
   if (avgEl) avgEl.textContent = `平均匯率: ${stats.avg_rate.toFixed(4)}`;
   if (dpEl) dpEl.textContent = `數據點: ${stats.data_points}`;
   if (drEl) drEl.textContent = `數據範圍: ${stats.date_range}`;
-} 
+}

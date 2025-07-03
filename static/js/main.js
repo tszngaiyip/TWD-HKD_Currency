@@ -187,7 +187,7 @@ class CurrencyManager {
   // 觸發預生成（獨立執行，不阻塞）
   triggerPregeneration(fromCurrency, toCurrency) {
     console.log(`🚀 觸發後端預生成 ${fromCurrency}-${toCurrency} 圖表...`);
-    fetch(`/api/pregenerate_charts?from_currency=${fromCurrency}&to_currency=${toCurrency}`)
+    fetch(`/api/pregenerate_charts?buy_currency=${fromCurrency}&sell_currency=${toCurrency}`)
       .then(response => response.json())
       .then(data => {
         if (data.success) {

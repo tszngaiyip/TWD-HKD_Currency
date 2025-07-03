@@ -603,11 +603,11 @@ body {
 }
 
 .right-panel .rate-trend.up {
-    color: #28a745;
+    color: #dc3545;
 }
 
 .right-panel .rate-trend.down {
-    color: #dc3545;
+    color: #28a745;
 }
 
 .right-panel .rate-trend.stable {
