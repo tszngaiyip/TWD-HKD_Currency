@@ -1,12 +1,289 @@
 let currentPeriod = 7;
 let eventSource = null; // SSE連接
-let currentFromCurrency = 'TWD';
-let currentToCurrency = 'HKD';
-let isSwapping = false; // 防止交換時重複觸發事件
-let isChartLoading = false; // 統一的圖表載入狀態
 
-let pendingFromCurrency = null; // 待確認的來源貨幣
-let pendingToCurrency = null; // 待確認的目標貨幣
+// CurrencyManager 類別 - 統一管理貨幣狀態和載入控制
+class CurrencyManager {
+  constructor() {
+    this.currentFromCurrency = 'TWD';
+    this.currentToCurrency = 'HKD';
+    this.pendingFromCurrency = null;
+    this.pendingToCurrency = null;
+    this.isSwapping = false;
+    
+    // 載入狀態管理（只有圖表和匯率）
+    this.loadingStates = {
+      chart: false,
+      rate: false
+    };
+    
+    this.loadFromStorage();
+  }
+
+  // 從 sessionStorage 載入狀態
+  loadFromStorage() {
+    const savedFromCurrency = sessionStorage.getItem('fromCurrency');
+    const savedToCurrency = sessionStorage.getItem('toCurrency');
+    
+    if (savedFromCurrency) this.currentFromCurrency = savedFromCurrency;
+    if (savedToCurrency) this.currentToCurrency = savedToCurrency;
+    
+    this.saveToStorage();
+  }
+
+  // 儲存到 sessionStorage
+  saveToStorage() {
+    sessionStorage.setItem('fromCurrency', this.currentFromCurrency);
+    sessionStorage.setItem('toCurrency', this.currentToCurrency);
+  }
+
+  // 檢查是否可以切換貨幣（圖表和匯率都載入完成）
+  canSwitchCurrency() {
+    return !this.loadingStates.chart && !this.loadingStates.rate;
+  }
+
+  // 設定載入狀態
+  setLoading(type, status) {
+    this.loadingStates[type] = status;
+    this.updateUIStates();
+  }
+
+  // 更新UI狀態（禁用/啟用按鈕）
+  updateUIStates() {
+    const isLoading = !this.canSwitchCurrency();
+    
+    // 禁用/啟用期間按鈕
+    const periodButtons = document.querySelectorAll('.period-btn');
+    periodButtons.forEach(btn => {
+      btn.disabled = isLoading;
+    });
+    
+    // 禁用/啟用貨幣選擇器
+    const currencyInputs = document.querySelectorAll('.currency-input');
+    currencyInputs.forEach(input => {
+      input.disabled = isLoading;
+    });
+    
+    // 禁用/啟用交換按鈕
+    const swapButton = document.querySelector('.exchange-arrow');
+    if (swapButton) {
+      swapButton.style.pointerEvents = isLoading ? 'none' : 'auto';
+      swapButton.style.opacity = isLoading ? '0.5' : '1';
+    }
+    
+    // 禁用/啟用狀態按鈕
+    const statusButtons = document.querySelectorAll('.status-btn');
+    statusButtons.forEach(btn => {
+      btn.disabled = isLoading;
+    });
+
+    // 禁用/啟用確認按鈕
+    const confirmBtn = document.getElementById('confirm-currency-btn');
+    if (confirmBtn) {
+      confirmBtn.disabled = isLoading;
+    }
+  }
+
+  // 統一的貨幣切換入口
+  async switchCurrencies(fromCurrency, toCurrency, source = 'manual') {
+    console.log(`🔄 切換貨幣: ${this.currentFromCurrency}-${this.currentToCurrency} → ${fromCurrency}-${toCurrency} (${source})`);
+    
+    // 檢查是否可以切換
+    if (!this.canSwitchCurrency()) {
+      console.log('⚠️ 系統忙碌中，無法切換貨幣');
+      return { success: false, reason: 'system_busy' };
+    }
+
+    // 如果沒有變化，直接返回
+    if (fromCurrency === this.currentFromCurrency && toCurrency === this.currentToCurrency) {
+      return { success: true, noChange: true };
+    }
+
+    // 立即設定載入狀態
+    this.setLoading('chart', true);
+    this.setLoading('rate', true);
+
+    try {
+      // 更新貨幣狀態
+      this.currentFromCurrency = fromCurrency;
+      this.currentToCurrency = toCurrency;
+      this.saveToStorage();
+
+      // 更新UI顯示
+      this.updateCurrencySelectors();
+      updateDisplay();
+
+      // 並行執行載入操作
+      const chartPromise = this.loadChart().finally(() => {
+        this.setLoading('chart', false);
+      });
+      
+      const ratePromise = this.loadRate().finally(() => {
+        this.setLoading('rate', false);
+      });
+
+      // 獨立執行預生成（不等待完成）
+      this.triggerPregeneration(fromCurrency, toCurrency);
+
+      // 等待圖表和匯率載入完成
+      await Promise.all([chartPromise, ratePromise]);
+
+      return {
+        success: true,
+        fromCurrency,
+        toCurrency,
+        source
+      };
+    } catch (error) {
+      console.error('貨幣切換失敗:', error);
+      // 確保載入狀態被重置
+      this.setLoading('chart', false);
+      this.setLoading('rate', false);
+      throw error;
+    }
+  }
+
+  // 載入圖表
+  async loadChart() {
+    try {
+      await fetchChart(currentPeriod);
+    } catch (error) {
+      console.error('圖表載入失敗:', error);
+      showError('圖表載入失敗，請稍後再試');
+      throw error;
+    }
+  }
+
+  // 載入匯率
+  async loadRate() {
+    try {
+      await loadLatestRate();
+    } catch (error) {
+      console.error('匯率載入失敗:', error);
+      showError('匯率載入失敗，請稍後再試');
+      throw error;
+    }
+  }
+
+  // 觸發預生成（獨立執行，不阻塞）
+  triggerPregeneration(fromCurrency, toCurrency) {
+    console.log(`🚀 觸發後端預生成 ${fromCurrency}-${toCurrency} 圖表...`);
+    fetch(`/api/pregenerate_charts?from_currency=${fromCurrency}&to_currency=${toCurrency}`)
+      .then(response => response.json())
+      .then(data => {
+        if (data.success) {
+          if (data.skipped) {
+            console.log(`⏭️ 預生成已跳過: ${data.message}`);
+          } else {
+            console.log(`✅ 預生成觸發成功: ${data.message}`);
+          }
+        } else {
+          console.error(`❌ 預生成觸發失敗: ${data.message}`);
+        }
+      })
+      .catch(error => {
+        console.error('觸發圖表預生成時發生錯誤:', error);
+      });
+  }
+
+  // 交換貨幣
+  async swapCurrencies() {
+    if (this.isSwapping) return;
+    
+    this.isSwapping = true;
+    
+    try {
+      // 清除待確認狀態
+      this.clearPendingChanges();
+      
+      // 添加視覺效果
+      const swapButton = document.querySelector('.exchange-arrow');
+      if (swapButton) {
+        swapButton.style.transform = 'rotate(180deg)';
+        setTimeout(() => swapButton.style.transform = '', 300);
+      }
+
+      // 關閉開啟的下拉選單
+      const openDropdown = document.querySelector('.currency-dropdown.open');
+      if (openDropdown) {
+        document.body.click();
+      }
+
+      // 執行交換
+      const result = await this.switchCurrencies(
+        this.currentToCurrency, 
+        this.currentFromCurrency, 
+        'swap'
+      );
+      
+      return result;
+    } finally {
+      setTimeout(() => this.isSwapping = false, 100);
+    }
+  }
+
+  // 確認貨幣變更
+  async confirmCurrencyChanges() {
+    if (!this.pendingFromCurrency && !this.pendingToCurrency) {
+      return { success: false, reason: 'no_pending_changes' };
+    }
+
+    const newFromCurrency = this.pendingFromCurrency || this.currentFromCurrency;
+    const newToCurrency = this.pendingToCurrency || this.currentToCurrency;
+
+    // 清除待確認狀態
+    this.clearPendingChanges();
+
+    // 執行切換
+    return await this.switchCurrencies(newFromCurrency, newToCurrency, 'confirm');
+  }
+
+  // 設置待確認的貨幣
+  setPendingCurrency(type, currency) {
+    if (type === 'from') {
+      this.pendingFromCurrency = currency;
+    } else if (type === 'to') {
+      this.pendingToCurrency = currency;
+    }
+    
+    this.showConfirmButton();
+  }
+
+  // 清除待確認狀態
+  clearPendingChanges() {
+    this.pendingFromCurrency = null;
+    this.pendingToCurrency = null;
+    this.hideConfirmButton();
+    this.updateCurrencySelectors();
+  }
+
+  // 顯示確認按鈕
+  showConfirmButton() {
+    const confirmBtn = document.getElementById('confirm-currency-btn');
+    if (confirmBtn) {
+      confirmBtn.style.display = 'block';
+    }
+  }
+
+  // 隱藏確認按鈕
+  hideConfirmButton() {
+    const confirmBtn = document.getElementById('confirm-currency-btn');
+    if (confirmBtn) {
+      confirmBtn.style.display = 'none';
+    }
+  }
+
+  // 更新貨幣選擇器顯示
+  updateCurrencySelectors() {
+    document.getElementById('from-currency').value = this.currentFromCurrency;
+    document.getElementById('to-currency').value = this.currentToCurrency;
+    
+    updateCurrencyDisplay('from-currency');
+    updateCurrencyDisplay('to-currency');
+  }
+}
+
+// 創建全域 CurrencyManager 實例
+const currencyManager = new CurrencyManager();
 
 // 頁面載入時自動載入圖表和最新匯率
 document.addEventListener('DOMContentLoaded', async function () {
@@ -26,26 +303,20 @@ document.addEventListener('DOMContentLoaded', async function () {
       sessionStorage.removeItem('toCurrency');
       // Store the new server ID
       sessionStorage.setItem('serverInstanceId', currentServerId);
+      
+      // 重設 CurrencyManager
+      currencyManager.currentFromCurrency = 'TWD';
+      currencyManager.currentToCurrency = 'HKD';
+      currencyManager.saveToStorage();
     }
   } catch (error) {
     console.error('檢查伺服器狀態失敗:', error);
     // If check fails, do not reset to preserve user selection in case of network issues
   }
-  // 嘗試從 sessionStorage 讀取儲存的貨幣
-  const savedFromCurrency = sessionStorage.getItem('fromCurrency');
-  const savedToCurrency = sessionStorage.getItem('toCurrency');
 
-  // 如果有儲存的值，則使用它們；否則使用預設值
-  currentFromCurrency = savedFromCurrency || 'TWD';
-  currentToCurrency = savedToCurrency || 'HKD';
-
-  // 將最終的貨幣選擇儲存回 sessionStorage
-  sessionStorage.setItem('fromCurrency', currentFromCurrency);
-  sessionStorage.setItem('toCurrency', currentToCurrency);
-  
+  // CurrencyManager 已經在初始化時處理了 sessionStorage 載入
   // 更新 select 元素的值
-  document.getElementById('from-currency').value = currentFromCurrency;
-  document.getElementById('to-currency').value = currentToCurrency;
+  currencyManager.updateCurrencySelectors();
 
   fetchChart(currentPeriod);
   loadLatestRate();
@@ -64,35 +335,7 @@ document.addEventListener('DOMContentLoaded', async function () {
   setupConfirmButton();
 });
 
-// 更新互動狀態（載入時禁用/啟用按鈕等）
-function updateInteractionStates() {
-  const isLoading = isChartLoading;
-  
-  // 禁用/啟用期間按鈕
-  const periodButtons = document.querySelectorAll('.period-btn');
-  periodButtons.forEach(btn => {
-    btn.disabled = isLoading;
-  });
-  
-  // 禁用/啟用貨幣選擇器
-  const currencyInputs = document.querySelectorAll('.currency-input');
-  currencyInputs.forEach(input => {
-    input.disabled = isLoading;
-  });
-  
-  // 禁用/啟用交換按鈕
-  const swapButton = document.querySelector('.exchange-arrow');
-  if (swapButton) {
-    swapButton.style.pointerEvents = isLoading ? 'none' : 'auto';
-    swapButton.style.opacity = isLoading ? '0.5' : '1';
-  }
-  
-  // 禁用/啟用狀態按鈕
-  const statusButtons = document.querySelectorAll('.status-btn');
-  statusButtons.forEach(btn => {
-    btn.disabled = isLoading;
-  });
-}
+// updateInteractionStates 已移至 CurrencyManager.updateUIStates()
 
 // 設置貨幣選擇器事件（統一搜索下拉選單）
 function setupCurrencySelectors() {
@@ -103,93 +346,14 @@ function setupCurrencySelectors() {
 
 function setupCurrencySwapButton() {
   const swapButton = document.querySelector('.exchange-arrow');
-  swapButton.addEventListener('click', function () { // Use function to get 'this'
-    // 添加點擊動畫效果
-    this.style.transform = 'rotate(180deg)';
-    setTimeout(() => {
-      this.style.transform = '';
-    }, 300);
-
-    // 如果有任何一個下拉選單是開著的，就關閉它
-    const openDropdown = document.querySelector('.currency-dropdown.open');
-    if (openDropdown) {
-      document.body.click();
-    }
-
-    // 交換前清除任何待確認的變更
-    if (pendingFromCurrency !== null || pendingToCurrency !== null) {
-      clearPendingChanges();
-    }
-
-    swapCurrencies();
-  });
-}
-
-// 交換來源貨幣和目標貨幣
-function swapCurrencies() {
-  if (isSwapping) return;
-  isSwapping = true;
-
-  try {
-    const fromSelect = document.getElementById('from-currency');
-    const toSelect = document.getElementById('to-currency');
-    const fromInput = document.getElementById('from-currency-input');
-    const toInput = document.getElementById('to-currency-input');
-
-    const fromValue = fromSelect.value;
-    const toValue = toSelect.value;
-
-    // 交換底層 select 的值
-    fromSelect.value = toValue;
-    toSelect.value = fromValue;
-
-    // 更新全局貨幣狀態
-    currentFromCurrency = fromSelect.value;
-    currentToCurrency = toSelect.value;
-
-    // 將新狀態存入 sessionStorage
-    sessionStorage.setItem('fromCurrency', currentFromCurrency);
-    sessionStorage.setItem('toCurrency', currentToCurrency);
-
-    // 手動更新顯示的 input 值，確保與 select 同步
-    const fromOption = fromSelect.options[fromSelect.selectedIndex];
-    const toOption = toSelect.options[toSelect.selectedIndex];
-
-    if (fromOption && fromInput) {
-      fromInput.value = fromOption.textContent;
-    }
-    if (toOption && toInput) {
-      toInput.value = toOption.textContent;
-    }
-
-    // 觸發後續更新
-    updateDisplay();
-    loadLatestRate();
-    // 新增：觸發圖表預生成
-    triggerChartPregeneration(currentFromCurrency, currentToCurrency);
-  } finally {
-    setTimeout(() => {
-      isSwapping = false;
-    }, 100);
+  if (swapButton) {
+    swapButton.addEventListener('click', () => {
+      currencyManager.swapCurrencies();
+    });
   }
 }
 
-// 觸發後端預生成所有期間圖表
-function triggerChartPregeneration(fromCurrency, toCurrency) {
-  console.log(`觸發後端預生成 ${fromCurrency}-${toCurrency} 圖表...`);
-  fetch(`/api/pregenerate_charts?from_currency=${fromCurrency}&to_currency=${toCurrency}`)
-    .then(response => response.json())
-    .then(data => {
-      if (data.success) {
-        console.log(`✅ 圖表預生成觸發成功: ${data.message}`);
-      } else {
-        console.error(`❌ 圖表預生成觸發失敗: ${data.message}`);
-      }
-    })
-    .catch(error => {
-      console.error('觸發圖表預生成時發生錯誤:', error);
-    });
-}
+// swapCurrencies 和 triggerChartPregeneration 已移至 CurrencyManager
 
 // 設置單個貨幣組合框（統一搜索下拉選單）
 function setupCurrencyCombobox(selectId) {
@@ -221,8 +385,8 @@ function setupCurrencyCombobox(selectId) {
     const fragment = document.createDocumentFragment();
 
     // 使用當前實際值或待定值來決定哪個項目被選中
-    const currentValue = (selectId === 'from-currency' && pendingFromCurrency) ? pendingFromCurrency :
-      (selectId === 'to-currency' && pendingToCurrency) ? pendingToCurrency :
+    const currentValue = (selectId === 'from-currency' && currencyManager.pendingFromCurrency) ? currencyManager.pendingFromCurrency :
+      (selectId === 'to-currency' && currencyManager.pendingToCurrency) ? currencyManager.pendingToCurrency :
         select.value;
 
     options.forEach((option) => {
@@ -248,8 +412,8 @@ function setupCurrencyCombobox(selectId) {
     filteredOptions = [...allOptions];
     createDropdownItems(filteredOptions);
 
-    const selectedValue = (selectId === 'from-currency' && pendingFromCurrency) ? pendingFromCurrency :
-      (selectId === 'to-currency' && pendingToCurrency) ? pendingToCurrency :
+    const selectedValue = (selectId === 'from-currency' && currencyManager.pendingFromCurrency) ? currencyManager.pendingFromCurrency :
+      (selectId === 'to-currency' && currencyManager.pendingToCurrency) ? currencyManager.pendingToCurrency :
         select.value;
 
     const selectedItem = dropdown.querySelector(`[data-value="${selectedValue}"]`);
@@ -286,24 +450,17 @@ function setupCurrencyCombobox(selectId) {
     if (!selectedOption) return;
 
     // 更新 pending 值
-    if (selectId === 'from-currency') {
-      pendingFromCurrency = value;
-    } else {
-      pendingToCurrency = value;
-    }
+    const type = selectId === 'from-currency' ? 'from' : 'to';
+    currencyManager.setPendingCurrency(type, value);
 
     // 更新輸入框顯示為待定選項
     input.value = selectedOption.text;
-
-    // 顯示確認按鈕
-    document.getElementById('confirm-currency-btn').style.display = 'block';
-    updateInteractionStates();
 
     hideDropdown();
   };
 
   const updateInputDisplay = () => {
-    const pendingValue = selectId === 'from-currency' ? pendingFromCurrency : pendingToCurrency;
+    const pendingValue = selectId === 'from-currency' ? currencyManager.pendingFromCurrency : currencyManager.pendingToCurrency;
     const finalValue = pendingValue || select.value;
     const selectedOption = allOptions.length > 0 ? allOptions.find(o => o.value === finalValue) : Array.from(select.options).find(o => o.value === finalValue);
 
@@ -415,10 +572,10 @@ function updateDisplay() {
   // 更新最新匯率區塊標題
   const rateHeader = document.querySelector('.latest-rate-header h3');
   if (rateHeader) {
-    rateHeader.textContent = `💰 最新匯率 (${currentFromCurrency} ⇒ ${currentToCurrency})`;
+    rateHeader.textContent = `💰 最新匯率 (${currencyManager.currentFromCurrency} ⇒ ${currencyManager.currentToCurrency})`;
   }
 
-  // 載入新選擇的圖表
+  // 載入新選擇的圖表（注意：圖表載入會由 CurrencyManager 控制載入狀態）
   fetchChart(currentPeriod);
 }
 
@@ -457,12 +614,12 @@ function fetchChart(period) {
     // 更新統計數據區域為載入中狀態
     updateStats(null); 
     
-    // 從全局變數獲取當前貨幣對
-    const fromCurrency = currentFromCurrency;
-    const toCurrency = currentToCurrency;
+    // 從 CurrencyManager 獲取當前貨幣對
+    const fromCurrency = currencyManager.currentFromCurrency;
+    const toCurrency = currencyManager.currentToCurrency;
 
-    // 發起 API 請求
-    fetch(`/api/chart?period=${period}&from_currency=${fromCurrency}&to_currency=${toCurrency}`)
+    // 發起 API 請求，返回 Promise
+    return fetch(`/api/chart?period=${period}&from_currency=${fromCurrency}&to_currency=${toCurrency}`)
         .then(response => {
             if (!response.ok) {
                 return response.json().then(err => { 
@@ -491,6 +648,7 @@ function fetchChart(period) {
         .catch(error => {
             console.error('獲取圖表時出錯:', error);
             handleChartError(`獲取圖表失敗: ${error.message}`);
+            throw error; // 重新拋出錯誤讓 CurrencyManager 能夠捕獲
         })
         .finally(() => {
             // 隱藏加載動畫
@@ -549,10 +707,10 @@ function getPrecision(value) {
 
 // 載入最新匯率
 function loadLatestRate() {
-  const fromCurrency = document.getElementById('from-currency').value;
-  const toCurrency = document.getElementById('to-currency').value;
+  const fromCurrency = currencyManager.currentFromCurrency;
+  const toCurrency = currencyManager.currentToCurrency;
 
-  fetch(`/api/latest_rate?from_currency=${fromCurrency}&to_currency=${toCurrency}`)
+  return fetch(`/api/latest_rate?from_currency=${fromCurrency}&to_currency=${toCurrency}`)
     .then(response => {
       if (!response.ok) {
         // 對於 4xx, 5xx 這類的 HTTP 錯誤，先解析 JSON 以獲取後端錯誤訊息
@@ -566,6 +724,7 @@ function loadLatestRate() {
       // API 回應現在直接是數據物件，或帶有 error 屬性的物件
       if (data.error) {
         showRateError(data.error);
+        throw new Error(data.error);
       } else {
         displayLatestRate(data);
       }
@@ -573,6 +732,7 @@ function loadLatestRate() {
     .catch(error => {
       console.error('載入最新匯率時發生錯誤:', error);
       showRateError(error.message || '無法連接伺服器或API發生錯誤');
+      throw error; // 重新拋出錯誤讓 CurrencyManager 能夠捕獲
     });
 }
 
@@ -615,16 +775,16 @@ function displayLatestRate(rateData) {
 
   const trendInfo = getTrendDisplay(rateData.trend, rateData.trend_value);
 
-  // 檢查全局變數是否有效
-  if (!currentFromCurrency || !currentToCurrency) {
-    console.error('❌ 全局貨幣變數為空', { currentFromCurrency, currentToCurrency });
+  // 檢查 CurrencyManager 的貨幣狀態是否有效
+  if (!currencyManager.currentFromCurrency || !currencyManager.currentToCurrency) {
+    console.error('❌ 貨幣狀態為空', { fromCurrency: currencyManager.currentFromCurrency, toCurrency: currencyManager.currentToCurrency });
     showRateError('貨幣設置錯誤，請重新載入頁面');
     return;
   }
 
-  const isTwdHkd = currentFromCurrency === 'TWD' && currentToCurrency === 'HKD';
+  const isTwdHkd = currencyManager.currentFromCurrency === 'TWD' && currencyManager.currentToCurrency === 'HKD';
   const displayRate = rateData.rate;
-  const rateLabel = `1 ${currentFromCurrency} = ? ${currentToCurrency}`;
+  const rateLabel = `1 ${currencyManager.currentFromCurrency} = ? ${currencyManager.currentToCurrency}`;
   
   let hint = '';
   if (isTwdHkd) {
@@ -842,52 +1002,14 @@ if (!document.getElementById('auto-update-styles')) {
 
 
 // 清除待確認的貨幣變更
-function clearPendingChanges() {
-  pendingFromCurrency = null;
-  pendingToCurrency = null;
-  
-  // 隱藏確認按鈕
-  document.getElementById('confirm-currency-btn').style.display = 'none';
-  
-  // 重置輸入框顯示為實際選中的值
-  updateCurrencyDisplay('from-currency');
-  updateCurrencyDisplay('to-currency');
-}
-
-// 確認貨幣變更
-function confirmCurrencyChanges() {
-  if (pendingFromCurrency === null && pendingToCurrency === null) {
-    return;
-  }
-
-  // 應用待確認的變更
-  if (pendingFromCurrency !== null) {
-    document.getElementById('from-currency').value = pendingFromCurrency;
-    currentFromCurrency = pendingFromCurrency;
-  }
-  if (pendingToCurrency !== null) {
-    document.getElementById('to-currency').value = pendingToCurrency;
-    currentToCurrency = pendingToCurrency;
-  }
-  
-  // 將新狀態存入 sessionStorage
-  sessionStorage.setItem('fromCurrency', currentFromCurrency);
-  sessionStorage.setItem('toCurrency', currentToCurrency);
-
-  // 清除待確認狀態
-  clearPendingChanges();
-
-  // 更新顯示和數據
-  updateDisplay();
-  loadLatestRate();
-  // 新增：觸發圖表預生成
-  triggerChartPregeneration(currentFromCurrency, currentToCurrency);
-}
+// clearPendingChanges 和 confirmCurrencyChanges 已移至 CurrencyManager
 
 // 設定確認按鈕事件
 function setupConfirmButton() {
   const confirmBtn = document.getElementById('confirm-currency-btn');
   if (confirmBtn) {
-    confirmBtn.addEventListener('click', confirmCurrencyChanges);
+    confirmBtn.addEventListener('click', () => {
+      currencyManager.confirmCurrencyChanges();
+    });
   }
 }

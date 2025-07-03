@@ -241,10 +241,6 @@ data_lock = Lock()
 sse_clients = []
 sse_lock = Lock()
 
-# 預生成圖表緩存功能已移到 ExchangeRateManager 的 LRU Cache 中
-# chart_cache = {}  # 已移除，使用 LRU Cache
-# chart_cache_lock = Lock()  # 已移除，LRU Cache 內建線程安全
-
 class ExchangeRateManager:
     def __init__(self):
         self.data = self.load_data()
@@ -326,10 +322,10 @@ class ExchangeRateManager:
         fingerprint = hashlib.md5(data_str.encode()).hexdigest()
         return fingerprint, len(relevant_data)
 
-    def is_cache_valid(self, days):
-        """檢查緩存是否仍然有效"""
+    def is_cache_valid(self, days, from_currency='TWD', to_currency='HKD'):
+        """檢查緩存是否仍然有效，支援多貨幣對"""
         # 使用 LRU cache 而不是全域 dict
-        cache_key = f"chart_TWD_HKD_{days}"
+        cache_key = f"chart_{from_currency}_{to_currency}_{days}"
         cached_info = self.lru_cache.get(cache_key)
         
         if cached_info is None:
@@ -339,14 +335,16 @@ class ExchangeRateManager:
         if 'data_fingerprint' not in cached_info:
             return False, "緩存缺少數據指紋"
 
-        # 獲取當前數據指紋
-        current_fingerprint, current_data_count = self.get_data_fingerprint(days)
+        # 對於 TWD-HKD，檢查數據指紋是否匹配
+        if from_currency == 'TWD' and to_currency == 'HKD':
+            # 獲取當前數據指紋
+            current_fingerprint, current_data_count = self.get_data_fingerprint(days)
 
-        # 比較指紋
-        if cached_info['data_fingerprint'] != current_fingerprint:
-            return False, f"數據已更新 (當前{current_data_count}筆數據)"
+            # 比較指紋
+            if cached_info['data_fingerprint'] != current_fingerprint:
+                return False, f"數據已更新 (當前{current_data_count}筆數據)"
 
-        # 檢查緩存時間（可選：如果緩存超過24小時，重新生成）
+        # 檢查緩存時間（如果緩存超過24小時，重新生成）
         cached_time = datetime.fromisoformat(cached_info['generated_at'])
         time_diff = datetime.now() - cached_time
         if time_diff.total_seconds() > 24 * 3600:  # 24小時
@@ -1375,14 +1373,58 @@ def regenerate_chart():
 
 @app.route('/api/pregenerate_charts')
 def pregenerate_charts_api():
-    """手動觸發預生成所有期間圖表API"""
+    """智能預生成圖表API - 只生成需要的圖表"""
     from_currency = request.args.get('from_currency', 'TWD')
     to_currency = request.args.get('to_currency', 'HKD')
+    force = request.args.get('force', 'false').lower() == 'true'
+    
     try:
+        periods = [7, 30, 90, 180]
+        missing_periods = []
+        cached_periods = []
+        
+        # 如果不是強制模式，檢查哪些期間需要生成
+        if not force:
+            for period in periods:
+                cache_key = f"chart_{from_currency}_{to_currency}_{period}"
+                cached_data = manager.lru_cache.get(cache_key)
+                
+                if cached_data and manager.is_cache_valid(period, from_currency, to_currency):
+                    cached_periods.append(period)
+                else:
+                    missing_periods.append(period)
+            
+            # 如果所有期間都已快取且有效，跳過預生成
+            if not missing_periods:
+                return jsonify({
+                    'success': True, 
+                    'skipped': True,
+                    'message': f'{from_currency}-{to_currency} 所有圖表已快取，跳過預生成',
+                    'cached_periods': cached_periods,
+                    'missing_periods': missing_periods
+                })
+        
+        # 執行預生成
+        print(f"🚀 智能預生成：{from_currency}-{to_currency}")
+        if not force and missing_periods:
+            print(f"   需要生成的期間：{missing_periods}")
+            print(f"   已快取的期間：{cached_periods}")
+        
         manager.pregenerate_all_charts(from_currency, to_currency)
-        return jsonify({'success': True, 'message': f'已觸發 {from_currency}-{to_currency} 圖表預生成'})
+        
+        return jsonify({
+            'success': True, 
+            'message': f'已觸發 {from_currency}-{to_currency} 圖表預生成',
+            'force_mode': force,
+            'cached_periods': cached_periods if not force else [],
+            'missing_periods': missing_periods if not force else periods
+        })
+        
     except Exception as e:
-        return jsonify({'success': False, 'message': f'預生成圖表失敗: {str(e)}'}), 500
+        return jsonify({
+            'success': False, 
+            'message': f'預生成圖表失敗: {str(e)}'
+        }), 500
 
 @app.route('/api/events')
 def sse_events():
