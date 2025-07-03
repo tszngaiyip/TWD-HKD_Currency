@@ -1198,14 +1198,12 @@ def get_latest_rate():
         latest_data = manager.get_latest_rate_with_fallback(from_currency, to_currency)
         
         if latest_data:
+            # 加入貨幣代碼以供前端顯示
+            latest_data['from_currency'] = from_currency
+            latest_data['to_currency'] = to_currency
             return jsonify(latest_data)
         else:
-            return jsonify({
-                "error": "無法獲取最新匯率，請稍後再試。",
-                "from_currency": from_currency,
-                "to_currency": to_currency
-            }), 500
-            
+            return jsonify({ 'error': '無法獲取最新匯率，請稍後再試。', 'from_currency': from_currency, 'to_currency': to_currency }), 500
     except Exception as e:
         app.logger.error(f"💥 API LATEST (ERROR): 在獲取 {from_currency}-{to_currency} 時發生嚴重錯誤: {e}", exc_info=True)
         return jsonify({

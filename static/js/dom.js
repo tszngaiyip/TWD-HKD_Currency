@@ -1,0 +1,89 @@
+// static/js/dom.js
+import { getPrecision } from './chart.js';
+
+export function showError(message) {
+  const errorEl = document.getElementById('error-message');
+  if (errorEl) {
+    errorEl.textContent = message;
+    errorEl.style.display = 'block';
+  }
+}
+
+// 顯示最新匯率數據（固定4位小數）
+export function displayLatestRate(data) {
+  const rateEl = document.getElementById('latest-rate-content');
+  if (!rateEl) return;
+  // 日期格式化
+  const formatDate = dateStr => new Date(dateStr).toLocaleDateString('zh-TW', { year: 'numeric', month: 'long', day: 'numeric' });
+  // 趨勢顯示
+  const getTrendDisplay = (trend, trendValue) => {
+    if (!trend || trend === 'stable') return { icon: '➡️', text: '持平', class: 'stable' };
+    if (trend === 'up') return { icon: '📈', text: `上漲 ${trendValue.toFixed(4)}`, class: 'up' };
+    return { icon: '📉', text: `下跌 ${trendValue.toFixed(4)}`, class: 'down' };
+  };
+  const trendInfo = getTrendDisplay(data.trend, data.trend_value);
+  const rateValue = data.rate;
+  // TWD⇔HKD反算提示
+  let hint = '';
+  if (data.from_currency === 'TWD' && data.to_currency === 'HKD') {
+    const inverted = 1 / data.rate;
+    hint = `<span class="rate-hint">(${inverted.toFixed(4)})</span>`;
+  }
+  rateEl.innerHTML = `
+    <div class="rate-display">
+      <div class="rate-info">
+        <div class="rate-date">📅 ${formatDate(data.date)}</div>
+        <div class="rate-trend ${trendInfo.class}">
+          <span class="trend-icon">${trendInfo.icon}</span>
+          <span>${trendInfo.text}</span>
+        </div>
+      </div>
+      <div class="rate-main">
+        <div class="rate-value">${rateValue.toFixed(4)}${hint}</div>
+        <div class="rate-label">1 ${data.from_currency} = ? ${data.to_currency}</div>
+      </div>
+      <div class="rate-info">
+        <div class="rate-date">🔄 最後更新</div>
+        <div style="font-size:0.8rem;color:#999;">
+          ${data.updated_time ? new Date(data.updated_time).toLocaleString('zh-TW') : '未知'}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// 顯示匯率載入錯誤（原始設計）
+export function showRateError(message) {
+  const rateEl = document.getElementById('latest-rate-content');
+  if (!rateEl) return;
+  rateEl.innerHTML = `
+    <div class="rate-error">
+      <div style="font-size:2rem;margin-bottom:10px;">⚠️</div>
+      <div>載入失敗</div>
+      <div style="font-size:0.9rem;margin-top:5px;">${message}</div>
+    </div>
+  `;
+}
+
+export function showPopup(title, content) {
+  // TODO: 實作 pop-up 顯示
+}
+
+export function closePopup() {
+  // TODO: 關閉 pop-up
+}
+
+// 更新圖表統計網格
+export function updateGridStats(stats) {
+  if (!stats) return;
+  const maxEl = document.getElementById('maxRate');
+  const minEl = document.getElementById('minRate');
+  const avgEl = document.getElementById('avgRate');
+  const dpEl = document.getElementById('dataPoints');
+  const drEl = document.getElementById('dateRange');
+  if (maxEl) maxEl.textContent = `最高匯率: ${stats.max_rate.toFixed(4)}`;
+  if (minEl) minEl.textContent = `最低匯率: ${stats.min_rate.toFixed(4)}`;
+  if (avgEl) avgEl.textContent = `平均匯率: ${stats.avg_rate.toFixed(4)}`;
+  if (dpEl) dpEl.textContent = `數據點: ${stats.data_points}`;
+  if (drEl) drEl.textContent = `數據範圍: ${stats.date_range}`;
+} 
