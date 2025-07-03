@@ -945,76 +945,78 @@ class ExchangeRateManager:
 
     def get_latest_rate_with_fallback(self, from_currency, to_currency):
         """
-        獲取最新匯率，針對 TWD-HKD 從本地數據讀取，其他貨幣則從 API 即時抓取。
+        獲取最新匯率，整合了 TWD-HKD 本地數據、其他貨幣對的 LRU 快取和 API 後備機制。
+        這是獲取最新匯率的唯一真實來源 (Single Source of Truth)。
         """
-        # --- TWD-HKD: 從本地 JSON 數據獲取 ---
-        if from_currency == 'TWD' and to_currency == 'HKD':
-            app.logger.info(f"從本地數據獲取 {from_currency}-{to_currency} 最新匯率")
-            with self.data_lock:  # 確保線程安全地訪問 self.data
+        # --- 優先處理 TWD-HKD: 從本地 JSON 數據獲取 ---
+        if {from_currency, to_currency} == {'TWD', 'HKD'}:
+            app.logger.info(f"從本地文件獲取 TWD-HKD 最新匯率")
+            with self.data_lock:
                 if not self.data:
-                    app.logger.warning("本地數據為空，無法提供 TWD-HKD 匯率")
                     return None
-
                 sorted_dates = self.get_sorted_dates()
                 if not sorted_dates:
-                    app.logger.warning("本地數據中沒有有效日期，無法提供 TWD-HKD 匯率")
                     return None
-
+                
                 latest_date_str = sorted_dates[-1]
                 latest_data = self.data[latest_date_str]
                 latest_rate = latest_data['rate']
-
-                # 計算趨勢
-                trend = None
-                trend_value = 0
+                
+                trend, trend_value = None, 0
                 if len(sorted_dates) > 1:
                     previous_date_str = sorted_dates[-2]
                     previous_rate = self.data[previous_date_str]['rate']
-
                     trend_value = latest_rate - previous_rate
-                    if trend_value > 0.00001:  # 使用一個小的容差值
-                        trend = 'up'
-                    elif trend_value < -0.00001:
-                        trend = 'down'
-                    else:
-                        trend = 'same'
-
+                    if trend_value > 0.00001: trend = 'up'
+                    elif trend_value < -0.00001: trend = 'down'
+                    else: trend = 'same'
+                
                 return {
-                    'date': latest_date_str,
-                    'rate': latest_rate,
-                    'trend': trend,
-                    'trend_value': trend_value,
+                    'date': latest_date_str, 'rate': latest_rate, 'trend': trend,
+                    'trend_value': trend_value, 'source': 'local_file',
                     'updated_time': latest_data.get('updated', datetime.now().isoformat())
                 }
 
-        # --- 其他貨幣對：從 API 即時抓取 ---
-        app.logger.info(f"嘗試為 {from_currency}-{to_currency} 進行即時抓取")
+        # --- 其他貨幣對：走 LRU 快取 -> API 抓取 的流程 ---
+        cache_key = (from_currency, to_currency)
+        
+        # 1. 嘗試從快取中獲取數據
+        cached_rate = self.latest_rate_cache.get(cache_key)
+        if cached_rate:
+            app.logger.info(f"✅ API LATEST (CACHE): {from_currency}-{to_currency} - 成功從快取提供")
+            response_data = cached_rate.copy()
+            response_data['source'] = 'cache'
+            return response_data
 
+        # 2. 如果快取未命中，則從 API 即時抓取
+        app.logger.info(f"🔄 API LATEST (FETCH): {from_currency}-{to_currency} - 快取未命中，嘗試從 API 獲取...")
         current_date = datetime.now()
-        # API在週末可能沒有數據，因此尋找最近的工作日
-        while current_date.weekday() >= 5:  # Saturday=5, Sunday=6
+        while current_date.weekday() >= 5: # 尋找最近的工作日
             current_date -= timedelta(days=1)
 
-        # 此方法處理實際的網路請求
         rate_data = self.get_exchange_rate(current_date, from_currency, to_currency)
 
         if not rate_data or 'data' not in rate_data:
-            app.logger.error(f"為 {from_currency}-{to_currency} 進行的即時抓取失敗。回應: {rate_data}")
+            app.logger.error(f"❌ API LATEST (FAIL): {from_currency}-{to_currency} - API 抓取失敗。")
             return None
 
+        # 3. 解析成功後，將新數據存入快取
         try:
             conversion_rate = float(rate_data['data']['conversionRate'])
-
-            # 模仿舊有邏輯：對於即時抓取的匯率不提供趨勢
-            return {
+            latest_data = {
                 'date': current_date.strftime('%Y-%m-%d'),
                 'rate': conversion_rate,
-                'trend': None,
-                'trend_value': 0,
+                'trend': None, 'trend_value': 0,
                 'updated_time': datetime.now().isoformat()
             }
+            self.latest_rate_cache.put(cache_key, latest_data)
+            app.logger.info(f"💾 API LATEST (STORE): {from_currency}-{to_currency} - 成功獲取並存入快取")
+            
+            response_data = latest_data.copy()
+            response_data['source'] = 'live_api'
+            return response_data
         except (KeyError, ValueError, TypeError) as e:
-            app.logger.error(f"為 {from_currency}-{to_currency} 解析即時抓取數據時出錯: {e}")
+            app.logger.error(f"❌ API LATEST (PARSE FAIL): 為 {from_currency}-{to_currency} 解析即時抓取數據時出錯: {e}")
             return None
 
 # 創建管理器實例
@@ -1182,41 +1184,16 @@ def data_status():
 
 @app.route('/api/latest_rate')
 def get_latest_rate():
-    """獲取最新匯率的API端點，整合了快取和後備機制"""
+    """獲取最新匯率的API端點，完全依賴 ExchangeRateManager 處理"""
     from_currency = request.args.get('from_currency', 'TWD')
     to_currency = request.args.get('to_currency', 'HKD')
     
-    # 建立快取鍵
-    cache_key = (from_currency, to_currency)
-    
-    # 1. 嘗試從快取中獲取數據
-    cached_rate = manager.latest_rate_cache.get(cache_key)
-    if cached_rate:
-        # 在回傳的數據中加入一個標示，表明數據來自快取
-        response_data = cached_rate.copy() # 創建副本以避免修改快取中的原始數據
-        response_data['source'] = 'cache'
-        app.logger.info(f"✅ API LATEST (CACHE): {from_currency}-{to_currency} - 成功從快取提供")
-        return jsonify(response_data)
-
-    # 2. 如果快取未命中，則執行原始的獲取邏輯
-    app.logger.info(f"🔄 API LATEST (FETCH): {from_currency}-{to_currency} - 快取未命中，嘗試從網路獲取...")
-    
-    # 使用 manager 的方法來獲取數據
     try:
         latest_data = manager.get_latest_rate_with_fallback(from_currency, to_currency)
         
         if latest_data:
-            # 3. 將成功獲取的數據存入快取
-            manager.latest_rate_cache.put(cache_key, latest_data)
-            app.logger.info(f"💾 API LATEST (STORE): {from_currency}-{to_currency} - 成功獲取並存入快取")
-
-            # 在回傳的數據中加入一個標示，表明數據是新抓取的
-            response_data = latest_data.copy()
-            response_data['source'] = 'live'
-            return jsonify(response_data)
+            return jsonify(latest_data)
         else:
-            # 即使有後備機制，也可能完全失敗
-            app.logger.error(f"❌ API LATEST (FAIL): {from_currency}-{to_currency} - 所有獲取方法均失敗")
             return jsonify({
                 "error": "無法獲取最新匯率，請稍後再試。",
                 "from_currency": from_currency,

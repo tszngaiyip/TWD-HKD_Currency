@@ -450,10 +450,12 @@ function fetchChart(period) {
     const chartSpinner = document.getElementById('chartSpinner');
     const statsContainer = document.getElementById('statsContainer');
 
-    // 顯示加載動畫，隱藏舊圖表和統計信息
+    // 顯示加載動畫，隱藏舊圖表
     chartSpinner.style.display = 'block';
     chartImage.style.display = 'none';
-    statsContainer.style.display = 'none';
+
+    // 更新統計數據區域為載入中狀態
+    updateStats(null); 
     
     // 從全局變數獲取當前貨幣對
     const fromCurrency = currentFromCurrency;
@@ -479,7 +481,6 @@ function fetchChart(period) {
                 // 更新統計數據
                 if (data.stats) {
                     updateStats(data.stats);
-                    statsContainer.style.display = 'block';
                 }
             } else if (data.no_data) {
                 handleChartError('數據不足，無法生成圖表。');
@@ -502,7 +503,9 @@ function handleChartError(message) {
     const statsContainer = document.getElementById('statsContainer');
     
     chartImage.style.display = 'none';
-    statsContainer.style.display = 'none';
+    
+    // 清空統計數據
+    updateStats(null);
     
     // 可以在這裡顯示一個錯誤消息給用戶
     const errorDisplay = document.getElementById('chartErrorDisplay'); // 假設你有這個元素
@@ -513,13 +516,21 @@ function handleChartError(message) {
 }
 
 function updateStats(stats) {
-    if (!stats) return;
-
     const maxRateEl = document.getElementById('maxRate');
     const minRateEl = document.getElementById('minRate');
     const avgRateEl = document.getElementById('avgRate');
     const dataPointsEl = document.getElementById('dataPoints');
     const dateRangeEl = document.getElementById('dateRange');
+
+    if (!stats) {
+        // 如果沒有統計數據（例如正在載入或出錯），則顯示預設文本
+        if (maxRateEl) maxRateEl.textContent = `最高匯率: 載入中...`;
+        if (minRateEl) minRateEl.textContent = `最低匯率: 載入中...`;
+        if (avgRateEl) avgRateEl.textContent = `平均匯率: 載入中...`;
+        if (dataPointsEl) dataPointsEl.textContent = `數據點: 載入中...`;
+        if (dateRangeEl) dateRangeEl.textContent = `數據範圍: 載入中...`;
+        return;
+    }
 
     if (maxRateEl) maxRateEl.textContent = `最高匯率: ${stats.max_rate ? stats.max_rate.toFixed(4) : 'N/A'}`;
     if (minRateEl) minRateEl.textContent = `最低匯率: ${stats.min_rate ? stats.min_rate.toFixed(4) : 'N/A'}`;

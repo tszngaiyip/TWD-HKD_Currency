@@ -625,8 +625,8 @@ body {
     padding: 15px;
 }
 
-/* 統計信息區塊 - 使用統一樣式 */
-.right-panel .stats {
+/* 統計資訊容器 */
+.right-panel .stats-container {
     background: white;
     border: 1px solid #e9ecef;
     border-radius: 12px;
@@ -635,50 +635,7 @@ body {
     flex-shrink: 0;
 }
 
-.right-panel .stats h3 {
-    font-size: 1rem;
-    font-weight: 600;
-    color: #2E86AB;
-    margin: 0 0 12px 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
-    padding-bottom: 8px;
-    border-bottom: 2px solid #f8f9fa;
-}
-
-.right-panel .stats-grid {
-    display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    gap: 10px;
-}
-
-.right-panel .stats-grid p {
-    background: white;
-    border: 1px solid #e9ecef;
-    border-radius: 8px;
-    padding: 16px 12px;
-    margin: 0;
-    text-align: center;
-    font-size: 0.9rem;
-    font-weight: 500;
-    color: #495057;
-}
-
-.right-panel .stats-grid .full-width {
-    grid-column: span 2;
-}
-
-.right-panel .stats-container {
-    background: white;
-    border: 1px solid #e9ecef;
-    border-radius: 12px;
-    box-shadow: 0 2px 12px rgba(0,0,0,0.08);
-    padding: 16px;
-}
-
-/* 統計容器標題樣式 */
+/* 統計標題 */
 .right-panel .stats-header h3 {
     font-size: 1rem;
     font-weight: 600;
@@ -690,6 +647,31 @@ body {
     gap: 8px;
     padding-bottom: 8px;
     border-bottom: 2px solid #f8f9fa;
+}
+
+/* 統計網格佈局 */
+.right-panel .stats-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 10px;
+}
+
+/* 統計項目 */
+.right-panel .stats-grid .stat-item {
+    background: #f8f9fa;
+    border: 1px solid #e9ecef;
+    border-radius: 8px;
+    padding: 12px;
+    margin: 0;
+    text-align: center;
+    font-size: 0.85rem;
+    font-weight: 500;
+    color: #495057;
+    transition: all 0.2s ease-in-out;
+}
+
+.right-panel .stats-grid .full-width {
+    grid-column: span 2;
 }
 
 /* 錯誤和成功消息 */
