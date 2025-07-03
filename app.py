@@ -259,7 +259,7 @@ class ExchangeRateManager:
             os.makedirs(self.charts_dir)
 
         # 初始化 LRU 快取
-        self.lru_cache = LRUCache(capacity=60, ttl_seconds=3600)
+        self.lru_cache = LRUCache(capacity=60, ttl_seconds=86400)
 
         # 用於圖表和歷史數據的快取 (24小時 TTL)
         self.historical_data_cache = LRUCache(capacity=50, ttl_seconds=86400) # 24 hours
@@ -278,8 +278,8 @@ class ExchangeRateManager:
         self.cache_config = {
             'chart_cache': {
                 'capacity': 60,
-                'ttl_seconds': 3600,
-                'auto_cleanup_interval': 3600
+                'ttl_seconds': 86400,
+                'auto_cleanup_interval': 86400
             },
             'warmup_enabled': True,
             'analytics_enabled': True
@@ -630,17 +630,51 @@ class ExchangeRateManager:
         return dates, rates
 
     def _background_fetch_and_generate(self, from_currency, to_currency):
-        """(在背景執行緒中運行) 抓取所有數據並漸進式生成圖表。"""
+        """一次性抓取完整180天歷史數據，批量生成所有圖表並快取。"""
         try:
-            print(f"🌀 背景任務開始：為 {from_currency}-{to_currency} 抓取180天數據。")
-            # 這個函數內部已經包含了漸進式生成圖表的邏輯
-            self.get_live_rates_for_period(180, from_currency, to_currency)
+            print(f"🌀 背景任務開始：為 {from_currency}-{to_currency} 抓取180天歷史數據並批量生成圖表。")
+            # 收集過去180天的所有工作日日期
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=180)
+            query_dates = []
+            current_date = end_date
+            while current_date >= start_date:
+                if current_date.weekday() < 5:
+                    query_dates.append(current_date)
+                current_date -= timedelta(days=1)
+
+            # 並行抓取所有匯率數據
+            rates_data = {}
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                future_to_date = {
+                    executor.submit(self._fetch_single_rate, date, from_currency, to_currency): date
+                    for date in query_dates
+                }
+                for future in as_completed(future_to_date):
+                    date = future_to_date[future]
+                    try:
+                        date_str, rate = future.result()
+                        if rate is not None:
+                            rates_data[date_str] = rate
+                    except Exception as e:
+                        print(f"⚠️ {date.strftime('%Y-%m-%d')} 抓取失敗: {e}")
+
+            # 批量生成4個週期圖表並快取
+            for period in [7, 30, 90, 180]:
+                try:
+                    chart_info = self.regenerate_chart_data(period, from_currency, to_currency, live_rates_data=rates_data)
+                    if chart_info:
+                        print(f"✅ 已生成 {period} 天圖表並快取")
+                except Exception as e:
+                    print(f"⚠️ 生成 {period} 天圖表失敗: {e}")
+
+            print(f"📈 背景任務完成：所有圖表生成完畢，後續將從快取中提供結果。")
         except Exception as e:
-            print(f"‼️ 背景抓取時發生錯誤 ({from_currency}-{to_currency}): {e}")
+            print(f"‼️ 背景任務錯誤 ({from_currency}-{to_currency}): {e}")
         finally:
             with self._active_fetch_lock:
                 self._active_fetches.discard((from_currency, to_currency))
-                print(f"✅ 背景任務完成 ({from_currency}-{to_currency})。")
+                print(f"🔚 背景任務結束 ({from_currency}-{to_currency})。")
 
     def create_chart(self, days, from_currency, to_currency):
         """創建圖表（帶 LRU Cache 和背景抓取協調）"""
@@ -949,7 +983,7 @@ class ExchangeRateManager:
         這是獲取最新匯率的唯一真實來源 (Single Source of Truth)。
         """
         # --- 優先處理 TWD-HKD: 從本地 JSON 數據獲取 ---
-        if {from_currency, to_currency} == {'TWD', 'HKD'}:
+        if from_currency == 'TWD' and to_currency == 'HKD':
             app.logger.info(f"從本地文件獲取 TWD-HKD 最新匯率")
             with self.data_lock:
                 if not self.data:
