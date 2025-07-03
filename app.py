@@ -7,8 +7,6 @@ from datetime import datetime, timedelta
 import matplotlib.dates as mdates
 import json
 import os
-import io
-import base64
 from threading import Lock, Thread
 import schedule
 import time
@@ -235,7 +233,6 @@ plt.rcParams['axes.unicode_minus'] = False
 
 # 數據文件路徑
 DATA_FILE = 'TWD-HKD_180d.json'
-data_lock = Lock()
 
 # SSE 連接管理
 sse_clients = []
@@ -257,8 +254,6 @@ class ExchangeRateManager:
         # 初始化 LRU 快取
         self.lru_cache = LRUCache(capacity=60, ttl_seconds=86400)
 
-        # 用於圖表和歷史數據的快取 (24小時 TTL)
-        self.historical_data_cache = LRUCache(capacity=50, ttl_seconds=86400) # 24 hours
         # 新增：用於今日匯率的快取 (與圖表快取使用相同的 TTL)
         self.latest_rate_cache = LRUCache(capacity=50, ttl_seconds=86400) # 24 hours
 
@@ -269,17 +264,6 @@ class ExchangeRateManager:
 
         # 主數據鎖
         self.data_lock = Lock()
-
-        # 簡化快取配置
-        self.cache_config = {
-            'chart_cache': {
-                'capacity': 60,
-                'ttl_seconds': 86400,
-                'auto_cleanup_interval': 86400
-            },
-            'warmup_enabled': True,
-            'analytics_enabled': True
-        }
 
     def load_data(self):
         """載入本地數據"""
@@ -294,7 +278,7 @@ class ExchangeRateManager:
 
     def save_data(self):
         """保存數據到本地"""
-        with data_lock:
+        with self.data_lock:
             with open(DATA_FILE, 'w', encoding='utf-8') as f:
                 json.dump(self.data, f, ensure_ascii=False, indent=2)
 
@@ -953,16 +937,6 @@ class ExchangeRateManager:
         if cleared_count > 0:
             print(f"🧹 快取清理完成：圖表快取過期 {cleared_count} 項")
         return cleared_count
-
-    def get_cache_stats(self):
-        """獲取快取統計資訊"""
-        return {'chart_cache': self.lru_cache.get_stats()}
-
-    def clear_all_cache(self):
-        """清空所有快取"""
-        self.lru_cache.clear()
-        self._cleanup_charts_directory(self.charts_dir, max_age_days=0)
-        print("🗑️ 已清空所有快取和圖表文件")
 
     def _calculate_stats(self, rates, dates_str):
         if not rates or not dates_str:

@@ -335,8 +335,6 @@ document.addEventListener('DOMContentLoaded', async function () {
   setupConfirmButton();
 });
 
-// updateInteractionStates 已移至 CurrencyManager.updateUIStates()
-
 // 設置貨幣選擇器事件（統一搜索下拉選單）
 function setupCurrencySelectors() {
   setupCurrencyCombobox('from-currency');
@@ -352,8 +350,6 @@ function setupCurrencySwapButton() {
     });
   }
 }
-
-// swapCurrencies 和 triggerChartPregeneration 已移至 CurrencyManager
 
 // 設置單個貨幣組合框（統一搜索下拉選單）
 function setupCurrencyCombobox(selectId) {
@@ -524,12 +520,6 @@ function setupCurrencyCombobox(selectId) {
         break;
     }
   });
-
-  const wrapperClickHandler = (e) => {
-    if (!wrapper.contains(e.target)) {
-      hideDropdown();
-    }
-  };
 
   input.addEventListener('click', () => {
     if (dropdown.classList.contains('open')) {
@@ -998,11 +988,6 @@ if (!document.getElementById('auto-update-styles')) {
     `;
   document.head.appendChild(style);
 }
-
-
-
-// 清除待確認的貨幣變更
-// clearPendingChanges 和 confirmCurrencyChanges 已移至 CurrencyManager
 
 // 設定確認按鈕事件
 function setupConfirmButton() {
