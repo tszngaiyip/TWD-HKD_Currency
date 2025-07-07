@@ -15,6 +15,7 @@ import hashlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import concurrent.futures
 import uuid
+from matplotlib.ticker import MaxNLocator, FuncFormatter
 
 app = Flask(__name__)
 SERVER_INSTANCE_ID = str(uuid.uuid4())
@@ -831,7 +832,9 @@ class ExchangeRateManager:
         dates = [datetime.strptime(d, '%Y-%m-%d') for d in all_dates_str]
         rates = all_rates
 
-        ax.plot(dates, rates, marker='o', linewidth=2, markersize=4, color='#2E86AB')
+        # 改成使用索引作為 X 軸，以確保間距相等
+        x_indices = range(len(dates))
+        ax.plot(x_indices, rates, marker='o', linewidth=2, markersize=4, color='#2E86AB')
         
         # 設定標題
         period_names = {7: '近1週', 30: '近1個月', 90: '近3個月', 180: '近6個月'}
@@ -841,27 +844,52 @@ class ExchangeRateManager:
         ax.set_xlabel('日期', fontsize=12)
         ax.set_ylabel('匯率', fontsize=12)
         
-        # 手動設置X軸刻度
-        if days <= 7:
-            tick_dates = dates
+        # 使用 MaxNLocator 自動決定 X 軸刻度，並確保最後一天總是被顯示
+        
+        # 根據圖表天數設定理想的刻度數量
+        if days <= 10:
+            nbins = 10
         elif days <= 30:
-            tick_dates = dates[::2] if len(dates) > 2 else dates
+            nbins = 15
         elif days <= 90:
-            tick_dates = dates[::len(dates)//10] if len(dates) > 10 else dates[::2]
+            nbins = 12
+        else:  # 180 days
+            nbins = 15
+
+        if len(x_indices) > 1:
+            locator = MaxNLocator(nbins=nbins, integer=True, min_n_ticks=3)
+            # 獲取自動計算的刻度位置
+            tick_indices = [int(i) for i in locator.tick_values(0, len(x_indices) - 1)]
+
+            # 確保最後一個數據點的索引總是被包含在內
+            last_index = len(x_indices) - 1
+            if last_index not in tick_indices:
+                # 如果最後一個刻度與倒數第二個刻度太近，則移除倒數第二個
+                # (間距小於平均刻度間距的 60%)
+                if tick_indices and last_index - tick_indices[-1] < (len(x_indices) / (nbins + 1)) * 0.6:
+                    tick_indices.pop()
+                tick_indices.append(last_index)
+            
+            tick_indices = sorted(list(set(tick_indices)))
+
+        elif x_indices:
+            tick_indices = [x_indices[0]]
         else:
-            tick_dates = dates[::len(dates)//15] if len(dates) > 15 else dates[::3]
-
-        # 確保最後一個日期（今天）總是被包含在刻度中
-        if days > 7 and dates and dates[-1] not in tick_dates:
-            tick_dates.append(dates[-1])
-
-        ax.set_xticks(tick_dates)
-        ax.set_xticklabels([date.strftime('%m/%d') for date in tick_dates])
+            tick_indices = []
+        
+        if tick_indices:
+            # 設置刻度和標籤
+            ax.set_xticks(tick_indices)
+            ax.set_xticklabels([dates[i].strftime('%m/%d') for i in tick_indices])
 
         ax.tick_params(axis='x', which='major', pad=8)
         
         # 添加網格
         ax.grid(True, alpha=0.3)
+        
+        # 為 Y 軸設定 MaxNLocator 和 Formatter 以獲得更清晰且格式統一的刻度
+        ax.yaxis.set_major_locator(MaxNLocator(nbins=10, prune='both', min_n_ticks=5))
+        ax.yaxis.set_major_formatter(FuncFormatter(lambda y, _: f'{y:.4f}'))
         
         # 添加平均線
         if rates:
@@ -887,7 +915,7 @@ class ExchangeRateManager:
             
             # 標記最高點
             ax.annotate(f'{max_rate:.4f}', 
-                       (dates[max_index], max_rate), 
+                       (max_index, max_rate), 
                        textcoords="offset points", 
                        xytext=(0,10), 
                        ha='center',
@@ -899,7 +927,7 @@ class ExchangeRateManager:
             
             # 標記最低點
             ax.annotate(f'{min_rate:.4f}', 
-                       (dates[min_index], min_rate), 
+                       (min_index, min_rate), 
                        textcoords="offset points", 
                        xytext=(0,10), # 調整y偏移以避免重疊
                        ha='center',
