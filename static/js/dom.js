@@ -65,11 +65,33 @@ export function showRateError(message) {
 }
 
 export function showPopup(title, content) {
-  // TODO: 實作 pop-up 顯示
+  const popupOverlay = document.getElementById('popup-overlay');
+  const popupTitle = document.getElementById('popup-title');
+  const popupBody = document.getElementById('popup-body');
+  
+  if (popupOverlay && popupTitle && popupBody) {
+    popupTitle.textContent = title;
+    popupBody.innerHTML = content;
+    popupOverlay.style.display = 'flex';
+    
+    // 添加淡入動畫效果
+    setTimeout(() => {
+      popupOverlay.classList.add('show');
+    }, 10);
+  }
 }
 
 export function closePopup() {
-  // TODO: 關閉 pop-up
+  const popupOverlay = document.getElementById('popup-overlay');
+  
+  if (popupOverlay) {
+    popupOverlay.classList.remove('show');
+    
+    // 等待動畫完成後隱藏元素
+    setTimeout(() => {
+      popupOverlay.style.display = 'none';
+    }, 300);
+  }
 }
 
 // 更新圖表統計網格

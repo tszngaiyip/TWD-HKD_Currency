@@ -354,6 +354,9 @@ document.addEventListener('DOMContentLoaded', async function () {
   
   // 綁定確認按鈕事件
   setupConfirmButton();
+  
+  // 綁定其他按鈕事件
+  setupEventListeners();
 });
 
 // 設置貨幣選擇器事件（統一搜索下拉選單）
@@ -768,6 +771,34 @@ function setupConfirmButton() {
   if (confirmBtn) {
     confirmBtn.addEventListener('click', () => {
       currencyManager.confirmCurrencyChanges();
+    });
+  }
+}
+
+// 設定其他事件監聽器
+function setupEventListeners() {
+  // 數據狀態按鈕
+  const dataStatusBtn = document.getElementById('data-status-btn');
+  if (dataStatusBtn) {
+    dataStatusBtn.addEventListener('click', checkDataStatus);
+  }
+
+  // 彈出視窗關閉事件
+  const popupOverlay = document.getElementById('popup-overlay');
+  const popupCloseBtn = document.getElementById('popup-close-btn');
+  const popupContent = document.querySelector('.popup-content');
+
+  if (popupOverlay) {
+    popupOverlay.addEventListener('click', closePopup);
+  }
+
+  if (popupCloseBtn) {
+    popupCloseBtn.addEventListener('click', closePopup);
+  }
+
+  if (popupContent) {
+    popupContent.addEventListener('click', (event) => {
+      event.stopPropagation();
     });
   }
 }

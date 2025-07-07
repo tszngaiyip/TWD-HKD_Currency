@@ -29,7 +29,7 @@
             </div>
             
             <div class="action-buttons">
-              <button class="status-btn" onclick="checkDataStatus()">📊 數據狀態</button>
+              <button class="status-btn" id="data-status-btn">📊 數據狀態</button>
             </div>
           </div>
         </div>
@@ -429,11 +429,11 @@
   </div>
 
   <!-- Popup 彈出視窗 -->
-  <div id="popup-overlay" class="popup-overlay" onclick="closePopup()">
-    <div class="popup-content" onclick="event.stopPropagation()">
+  <div id="popup-overlay" class="popup-overlay">
+    <div class="popup-content">
       <div class="popup-header">
         <h3 id="popup-title" class="popup-title">標題</h3>
-        <button class="popup-close" onclick="closePopup()">×</button>
+        <button class="popup-close" id="popup-close-btn">×</button>
       </div>
       <div id="popup-body" class="popup-body">
         <!-- 內容將在這裡顯示 -->
