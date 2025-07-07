@@ -38,6 +38,39 @@ body {
     font-size: 1.6rem;
     margin-bottom: 3px;
     font-weight: 400;
+    display: inline-block; /* 確保 h1 和指示燈在同一行 */
+    vertical-align: middle;
+}
+
+#sse-status-indicator {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    margin-left: 10px;
+    vertical-align: middle;
+    transition: background-color 0.5s ease;
+}
+
+#sse-status-indicator.disconnected {
+    background-color: #6c757d; /* 灰色 */
+}
+
+#sse-status-indicator.connected {
+    background-color: #28a745; /* 綠色 */
+    animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+    0% {
+        box-shadow: 0 0 0 0 rgba(40, 167, 69, 0.7);
+    }
+    70% {
+        box-shadow: 0 0 0 10px rgba(40, 167, 69, 0);
+    }
+    100% {
+        box-shadow: 0 0 0 0 rgba(40, 167, 69, 0);
+    }
 }
 
 .header .subtitle {
@@ -514,6 +547,49 @@ body {
     margin-top: 8px;
 }
 
+/* 圖表載入動畫容器 */
+.spinner-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    text-align: center;
+    padding: 20px;
+}
+
+.spinner-container .progress-bar-container {
+    width: 250px;
+    display: block;
+}
+
+.spinner-container .progress-percentage {
+    font-size: 0.8rem;
+    color: #495057;
+    font-weight: 500;
+    display: block;
+}
+
+@keyframes chartSpinRotate {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+.spinner-container p {
+    font-size: 1rem;
+    color: #6c757d;
+    margin: 0;
+    font-weight: 500;
+}
+
+.spinner-container .loading-details {
+    font-size: 0.85rem;
+    color: #868e96;
+    text-align: center;
+    margin-top: 0;
+    max-width: 280px;
+}
+
 /* 最新匯率區塊 - 使用統一樣式 */
 .right-panel .latest-rate-section {
     background: white;
@@ -623,6 +699,18 @@ body {
     font-size: 0.85rem;
     text-align: center;
     padding: 15px;
+}
+
+.right-panel .rate-timing {
+    font-size: 0.7rem;
+    color: #95a5a6;
+    text-align: center;
+    margin-top: 6px;
+    padding: 3px 8px;
+    background: #f8f9fa;
+    border-radius: 12px;
+    border: 1px solid #e9ecef;
+    display: inline-block;
 }
 
 /* 統計資訊容器 */

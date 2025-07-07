@@ -1,9 +1,19 @@
 import { fetchChart, loadLatestRate, triggerPregeneration } from './api.js';
 import { handleChartError, updateStats, getPrecision } from './chart.js';
-import { displayLatestRate, showRateError, showPopup, closePopup, updateGridStats } from './dom.js';
+import { 
+  displayLatestRate, 
+  showRateError, 
+  showPopup, 
+  closePopup, 
+  updateGridStats,
+  showGlobalProgressBar,
+  updateGlobalProgressBar,
+  hideGlobalProgressBar
+} from './dom.js';
 
 let currentPeriod = 7;
 let eventSource = null; // SSE連接
+const chartCache = {}; // 前端圖表快取
 
 // CurrencyManager 類別 - 統一管理貨幣狀態和載入控制
 class CurrencyManager {
@@ -54,12 +64,6 @@ class CurrencyManager {
   // 更新UI狀態（禁用/啟用按鈕）
   updateUIStates() {
     const isLoading = !this.canSwitchCurrency();
-    
-    // 禁用/啟用期間按鈕
-    const periodButtons = document.querySelectorAll('.period-btn');
-    periodButtons.forEach(btn => {
-      btn.disabled = isLoading;
-    });
     
     // 禁用/啟用貨幣選擇器
     const currencyInputs = document.querySelectorAll('.currency-input');
@@ -146,38 +150,51 @@ class CurrencyManager {
     }
   }
 
-  // 載入圖表
+  // 載入圖表 (Refactored to be a "Viewer" with trigger)
   async loadChart() {
-    try {
-      const spinner = document.getElementById('chartSpinner');
-      const chartImage = document.getElementById('chartImage');
-      const errorDisplay = document.getElementById('chartErrorDisplay');
-      spinner.style.display = 'block';
-      chartImage.style.display = 'none';
-      errorDisplay.style.display = 'none';
+    const cacheKey = `${this.currentFromCurrency}_${this.currentToCurrency}_${currentPeriod}`;
+    
+    // 1. 檢查前端快取
+    if (chartCache[cacheKey]) {
+      console.log(`✅ [Viewer] 從快取渲染圖表: ${cacheKey}`);
+      const chartData = chartCache[cacheKey];
 
-      const chartData = await fetchChart(currentPeriod, this.currentFromCurrency, this.currentToCurrency);
-      spinner.style.display = 'none';
-      if (chartData.chart_url) {
+      // 將渲染邏輯放入回呼函式，在進度條隱藏後執行
+      const renderCallback = () => {
+        const chartImage = document.getElementById('chartImage');
         chartImage.src = chartData.chart_url;
         chartImage.style.display = 'block';
         updateStats(chartData.stats);
-        // 顯示並更新圖表統計網格
-        updateGridStats(chartData.stats);
-      } else {
-        handleChartError('無法生成圖表');
-      }
-    } catch (error) {
-      console.error('圖表載入失敗:', error);
-      handleChartError('圖表載入失敗，請稍後再試');
+        updateGridStats(chartData.stats, chartData.processing_time_ms);
+        document.getElementById('chartErrorDisplay').style.display = 'none';
+      };
+
+      hideGlobalProgressBar(renderCallback);
+      return;
     }
+
+    // 2. 如果快取未命中，顯示進度條並觸發後端流程
+    console.log(`⏳ [Viewer] 圖表不在快取中: ${cacheKey}。觸發後端生成/通知...`);
+    showGlobalProgressBar('圖表請求已發送，等待後端處理...');
+    
+    // 觸發後端開始生成圖表 (或發送已有的快取圖表)
+    this.triggerPregeneration(this.currentFromCurrency, this.currentToCurrency);
   }
 
-  // 載入匯率
+  // 載入最新匯率
   async loadRate() {
+    const startTime = performance.now();
+    
     try {
       const rateData = await loadLatestRate(this.currentFromCurrency, this.currentToCurrency);
+      const finalTime = (performance.now() - startTime) / 1000;
+      
       displayLatestRate(rateData);
+      
+      // 顯示處理時間信息
+      if (rateData.processing_time) {
+        console.log(`💱 匯率載入完成 - 前端用時: ${finalTime.toFixed(2)}秒, 後端處理: ${rateData.processing_time}秒`);
+      }
     } catch (error) {
       console.error('匯率載入失敗:', error);
       showRateError('匯率載入失敗，請稍後再試');
@@ -338,12 +355,13 @@ document.addEventListener('DOMContentLoaded', async function () {
   // 更新 select 元素的值
   currencyManager.updateCurrencySelectors();
 
-  // 初始載入圖表與匯率
-  currencyManager.loadChart();
-  currencyManager.loadRate();
-
+  // 【修正】必須先建立 SSE 連接，才能觸發任何可能發送 SSE 事件的行為
   // 建立SSE連接
   setupSSEConnection();
+
+  // 【修正】初始載入圖表與匯率，使用直接呼叫，而不是有 bug 的 switchCurrencies
+  currencyManager.loadChart();
+  currencyManager.loadRate();
 
   // 綁定貨幣選擇器事件
   setupCurrencySelectors();
@@ -666,46 +684,71 @@ function setupSSEConnection() {
     eventSource.close();
   }
 
-  console.log('🔗 建立SSE連接...');
   eventSource = new EventSource('/api/events');
 
-  eventSource.onopen = function (event) {
-    console.log('✅ SSE連接已建立');
+  eventSource.onopen = function() {
+    console.log("[SSE] 連接已建立");
+    document.getElementById('sse-status-indicator').classList.add('connected');
+    document.getElementById('sse-status-indicator').classList.remove('disconnected');
+    document.getElementById('sse-status-indicator').title = 'SSE 已連接';
   };
 
-  eventSource.addEventListener('connected', function (event) {
-    const data = JSON.parse(event.data);
-    console.log('🔗 SSE連接確認:', data.message);
-  });
-
-  eventSource.addEventListener('rate_updated', function (event) {
-    const data = JSON.parse(event.data);
-    console.log('🔄 收到匯率更新事件:', data);
-
-    // 自動刷新頁面內容
-    autoRefreshContent(data);
-  });
-
-  eventSource.addEventListener('heartbeat', function (event) {
-    // 心跳包，保持連接活躍
-  });
-
-  eventSource.onerror = function (event) {
-    console.log('❌ SSE連接錯誤，5秒後重新連接...');
-    eventSource.close();
-    setTimeout(() => {
-      setupSSEConnection();
-    }, 5000);
+  eventSource.onerror = function(err) {
+    console.error("[SSE] 連接錯誤:", err);
+    document.getElementById('sse-status-indicator').classList.add('disconnected');
+    document.getElementById('sse-status-indicator').classList.remove('connected');
+    document.getElementById('sse-status-indicator').title = 'SSE 已斷開';
+    // 可以在這裡添加重連邏輯
   };
 
-  // 頁面卸載時關閉連接
-  window.addEventListener('beforeunload', function () {
-    if (eventSource) {
-      eventSource.close();
+  // 監聽後端發送的通用訊息
+  eventSource.addEventListener('message', function(event) {
+    console.log("[SSE] 收到通用訊息:", event.data);
+  });
+
+  // 監聽匯率更新事件
+  eventSource.addEventListener('rate_updated', function(event) {
+    const updateData = JSON.parse(event.data);
+    console.log('[SSE] 監聽到匯率更新:', updateData);
+    autoRefreshContent(updateData);
+  });
+  
+  // 【新】監聽後端進度更新
+  eventSource.addEventListener('progress_update', (event) => {
+    const data = JSON.parse(event.data);
+    // 檢查進度更新是否針對當前檢視的貨幣對
+    if (data.buy_currency === currencyManager.currentFromCurrency && data.sell_currency === currencyManager.currentToCurrency) {
+        console.log(`[SSE] 進度: ${data.progress}% (${data.message})`);
+        updateGlobalProgressBar(data.progress, data.message);
     }
+  });
+
+  // 【新】監聽圖表就緒事件
+  eventSource.addEventListener('chart_ready', (event) => {
+    const data = JSON.parse(event.data);
+    const { period, chart_info, buy_currency, sell_currency } = data;
+    
+    console.log(`[SSE] 圖表就緒: ${period}天 (${buy_currency}-${sell_currency})`);
+
+    // 將收到的圖表資訊存入前端快取
+    const cacheKey = `${buy_currency}_${sell_currency}_${period}`;
+    chartCache[cacheKey] = chart_info;
+
+    // 如果這個就緒的圖表，正是使用者當前正在查看的週期和貨幣，則立即刷新圖表
+    if (period === currentPeriod && buy_currency === currencyManager.currentFromCurrency && sell_currency === currencyManager.currentToCurrency) {
+        console.log(`[SSE] 就緒的圖表 (${period}天) 符合當前檢視，觸發刷新...`);
+        currencyManager.loadChart();
+    }
+  });
+
+  eventSource.addEventListener('heartbeat', function(event) {
+    // console.log("[SSE] 收到心跳包");
   });
 }
 
+/**
+ * 自動刷新頁面內容
+ */
 function autoRefreshContent(updateData) {
   console.log('🔄 收到服務器推送，自動刷新頁面內容...');
 

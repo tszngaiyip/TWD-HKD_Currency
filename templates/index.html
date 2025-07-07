@@ -12,6 +12,7 @@
   <div class="container">
     <div class="header">
       <h1>💱 匯率走勢圖</h1>
+      <div id="sse-status-indicator" class="disconnected" title="SSE 已斷開"></div>
       <div class="subtitle">多幣種匯率分析工具</div>
     </div>
 
@@ -41,8 +42,14 @@
           <div id="chart-container" class="chart-container">
             <!-- 載入動畫 -->
             <div id="chartSpinner" class="spinner-container" style="display: none;">
-                <div class="spinner"></div>
                 <p>正在生成圖表...</p>
+                <div class="loading-details">
+                  <span id="loadingMessage">正在獲取匯率數據...</span>
+                </div>
+                <div class="progress-bar-container">
+                    <div id="progressBar" class="progress-bar"></div>
+                </div>
+                <div id="progressPercentage" class="progress-percentage">0%</div>
             </div>
             <!-- 圖表圖片 -->
             <img id="chartImage" src="" alt="匯率走勢圖" style="display: none; max-width: 100%;">
@@ -294,6 +301,7 @@
                   <option value="GYD">GUYANA DOLLAR - GYD</option>
                   <option value="HTG">HAITI GOURDE - HTG</option>
                   <option value="HNL">HONDURAS LEMPIRA - HNL</option>
+                  <option value="HKD">HONG KONG DOLLAR - HKD</option>
                   <option value="HUF">HUNGARIAN FORINT - HUF</option>
                   <option value="ISK">ICELANDIC KRONA - ISK</option>
                   <option value="INR">INDIAN RUPEE - INR</option>
@@ -363,7 +371,6 @@
                   <option value="SZL">SWAZILAND LILANGENI - SZL</option>
                   <option value="SEK">SWEDISH KRONA - SEK</option>
                   <option value="CHF">SWISS FRANC - CHF</option>
-                  <option value="TWD">TAIWAN DOLLAR - TWD</option>
                   <option value="TJS">TAJIKISTAN SOMONI - TJS</option>
                   <option value="TZS">TANZANIAN SHILLING - TZS</option>
                   <option value="THB">THAI BAHT - THB</option>

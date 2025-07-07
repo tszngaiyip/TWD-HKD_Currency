@@ -612,10 +612,14 @@ class ExchangeRateManager:
         return dates, rates
 
     def _background_fetch_and_generate(self, buy_currency, sell_currency):
-        """一次性抓取完整180天歷史數據，批量生成所有圖表並快取。"""
+        """
+        [REFACTORED]
+        非同步抓取180天歷史數據，並在過程中流式生成圖表、發送進度。
+        """
         try:
-            print(f"🌀 背景任務開始：為 {buy_currency}-{sell_currency} 抓取180天歷史數據並批量生成圖表。")
-            # 收集過去180天的所有工作日日期
+            print(f"🌀 事件驅動背景任務開始：為 {buy_currency}-{sell_currency} 抓取180天數據。")
+
+            # 1. 收集過去180天的所有工作日日期，從新到舊排序以優先獲取最新數據
             end_date = datetime.now()
             start_date = end_date - timedelta(days=180)
             query_dates = []
@@ -625,34 +629,70 @@ class ExchangeRateManager:
                     query_dates.append(current_date)
                 current_date -= timedelta(days=1)
 
-            # 並行抓取所有匯率數據
+            total_days_to_fetch = len(query_dates)
+            if total_days_to_fetch == 0:
+                print(f"🔚 {buy_currency}-{sell_currency}: 無需抓取任何日期。")
+                return
+
+            # 2. 初始化變量
             rates_data = {}
-            with ThreadPoolExecutor(max_workers=5) as executor:
-                future_to_date = {
-                    executor.submit(self._fetch_single_rate, date, buy_currency, sell_currency): date
-                    for date in query_dates
-                }
-                for future in as_completed(future_to_date):
-                    date = future_to_date[future]
-                    try:
-                        date_str, rate = future.result()
-                        if rate is not None:
-                            rates_data[date_str] = rate
-                    except Exception as e:
-                        print(f"⚠️ {date.strftime('%Y-%m-%d')} 抓取失敗: {e}")
+            fetched_count = 0
+            generated_periods = set()
+            # 定義生成圖表的數據點檢查點 (日曆天數 -> 約略工作天數)
+            chart_generation_checkpoints = {
+                7: 5,
+                30: 21,
+                90: 65,
+                180: 129
+            }
+            periods_to_check = sorted(chart_generation_checkpoints.keys())
 
-            # 批量生成4個週期圖表並快取
-            for period in [7, 30, 90, 180]:
-                try:
-                    chart_info = self.regenerate_chart_data(period, buy_currency, sell_currency, live_rates_data=rates_data)
-                    if chart_info:
-                        print(f"✅ 已生成 {period} 天圖表並快取")
-                except Exception as e:
-                    print(f"⚠️ 生成 {period} 天圖表失敗: {e}")
+            # 3. 逐日抓取數據並在過程中處理
+            for date in query_dates:
+                # 獲取單一匯率
+                date_str, rate = self._fetch_single_rate(date, buy_currency, sell_currency)
+                fetched_count += 1
+                
+                if rate is not None:
+                    rates_data[date_str] = rate
 
-            print(f"📈 背景任務完成：所有圖表生成完畢，後續將從快取中提供結果。")
+                # 計算並發送進度
+                progress = int((fetched_count / total_days_to_fetch) * 100)
+                send_sse_event('progress_update', {
+                    'progress': progress,
+                    'buy_currency': buy_currency,
+                    'sell_currency': sell_currency,
+                    'message': f'正在獲取 {date_str} 的數據... ({fetched_count}/{total_days_to_fetch})'
+                })
+                
+                # 檢查是否達到生成圖表的檢查點
+                successful_fetches = len(rates_data)
+                
+                for period in periods_to_check:
+                    required_points = chart_generation_checkpoints[period]
+                    # 如果尚未生成此週期的圖表，並且我們擁有的數據點足夠
+                    if period not in generated_periods and successful_fetches >= required_points:
+                        # 使用 regenerate_chart_data 生成圖表
+                        chart_info = self.regenerate_chart_data(period, buy_currency, sell_currency, live_rates_data=rates_data)
+                        
+                        if chart_info:
+                            send_sse_event('chart_ready', {
+                                'period': period,
+                                'chart_info': chart_info,
+                                'buy_currency': buy_currency,
+                                'sell_currency': sell_currency
+                            })
+                            generated_periods.add(period)
+                        else:
+                            print(f"⚠️ 生成 {period} 天圖表失敗({buy_currency}-{sell_currency})，數據可能不足或發生錯誤。")
+
+
+            print(f"📈 事件驅動背景任務完成 ({buy_currency}-{sell_currency})。")
+
         except Exception as e:
             print(f"‼️ 背景任務錯誤 ({buy_currency}-{sell_currency}): {e}")
+            import traceback
+            traceback.print_exc()
         finally:
             with self._active_fetch_lock:
                 self._active_fetches.discard((buy_currency, sell_currency))
@@ -892,21 +932,33 @@ class ExchangeRateManager:
 
         if buy_currency == 'TWD' and sell_currency == 'HKD':
             periods = [7, 30, 90, 180]
-            # TWD-HKD 數據在本地，可以直接並行生成
+            
+            # 為 TWD-HKD 創建一個包含通知的生成器
+            def generate_and_notify(period):
+                try:
+                    # 1. 生成圖表
+                    chart_info = self.regenerate_chart_data(period, buy_currency, sell_currency)
+                    
+                    if chart_info and chart_info.get('chart_url'):
+                        print(f"  ✅ 預生成 {buy_currency}-{sell_currency} {period} 天圖表成功")
+                        # 2. 發送 SSE 通知事件
+                        send_sse_event('chart_ready', {
+                            'period': period,
+                            'chart_info': chart_info,
+                            'buy_currency': buy_currency,
+                            'sell_currency': sell_currency
+                        })
+                    else:
+                        print(f"  ❌ 預生成 {buy_currency}-{sell_currency} {period} 天圖表失敗")
+                except Exception as e:
+                    print(f"  ❌ 預生成 {buy_currency}-{sell_currency} {period} 天圖表時發生錯誤: {e}")
+
+            # 使用線程池並行執行，包含通知
             with ThreadPoolExecutor(max_workers=4) as executor:
-                future_to_period = {executor.submit(self.regenerate_chart_data, period, buy_currency, sell_currency): period for period in periods}
-                for future in as_completed(future_to_period):
-                    period = future_to_period[future]
-                    try:
-                        chart_data = future.result()
-                        if chart_data and chart_data.get('chart_url'):
-                            print(f"  ✅ 預生成 {buy_currency}-{sell_currency} {period} 天圖表成功")
-                        else:
-                            print(f"  ❌ 預生成 {buy_currency}-{sell_currency} {period} 天圖表失敗")
-                    except Exception as e:
-                        print(f"  ❌ 預生成 {buy_currency}-{sell_currency} {period} 天圖表時發生錯誤: {e}")
+                for period in periods:
+                    executor.submit(generate_and_notify, period)
         else:
-            # 對於其他貨幣對，只需確保背景任務正在運行
+            # 對於其他貨幣對，只需確保背景任務正在運行（此邏輯已是事件驅動）
             with self._active_fetch_lock:
                 if (buy_currency, sell_currency) not in self._active_fetches:
                     print(f"🌀 預生成: {buy_currency}-{sell_currency} 的背景抓取尚未啟動，現在開始...")
@@ -1153,6 +1205,9 @@ def index():
 @app.route('/api/chart')
 def get_chart():
     """獲取圖表API - 支援多幣種並統一使用伺服器快取"""
+    import time
+    start_time = time.time()
+    
     period = request.args.get('period', '7')
     buy_currency = request.args.get('buy_currency', 'TWD')
     sell_currency = request.args.get('sell_currency', 'HKD')
@@ -1167,16 +1222,22 @@ def get_chart():
         # 統一使用 create_chart，由其內部判斷數據來源和快取邏輯
         chart_data = manager.create_chart(days, buy_currency, sell_currency)
 
+        # 計算處理時間
+        processing_time = time.time() - start_time
+        
         if chart_data and chart_data.get('chart_url'):
+            chart_data['processing_time'] = round(processing_time, 3)
+            chart_data['processing_time_ms'] = round(processing_time * 1000, 1)
             return jsonify(chart_data)
         else:
-            return jsonify({'error': '無法生成圖表', 'no_data': True}), 500
+            return jsonify({'error': '無法生成圖表', 'no_data': True, 'processing_time': round(processing_time, 3)}), 500
             
     except Exception as e:
+        processing_time = time.time() - start_time
         print(f"處理圖表請求時發生未預期的錯誤: {e}")
         import traceback
         traceback.print_exc()
-        return jsonify({'error': '伺服器內部錯誤'}), 500
+        return jsonify({'error': '伺服器內部錯誤', 'processing_time': round(processing_time, 3)}), 500
 
 @app.route('/api/data_status')
 def data_status():
@@ -1209,11 +1270,17 @@ def data_status():
 @app.route('/api/latest_rate')
 def get_latest_rate():
     """獲取最新匯率的API端點，完全依賴 ExchangeRateManager 處理"""
+    import time
+    start_time = time.time()
+    
     buy_currency = request.args.get('buy_currency', 'TWD')
     sell_currency = request.args.get('sell_currency', 'HKD')
     
     try:
         latest_data = manager.get_latest_rate_with_fallback(buy_currency, sell_currency)
+        
+        # 計算處理時間
+        processing_time = time.time() - start_time
         
         if latest_data:
             # 判斷目前匯率是否為近7/30/90/180天內最低（代表最好）
@@ -1233,18 +1300,27 @@ def get_latest_rate():
                     latest_data['lowest_rate'] = min(rates30)
                     latest_data['lowest_period'] = 30
                 latest_data['is_best'] = False
-            # 加入貨幣代碼
+            # 加入貨幣代碼和處理時間
             latest_data['buy_currency'] = buy_currency
             latest_data['sell_currency'] = sell_currency
+            latest_data['processing_time'] = round(processing_time, 3)
+            latest_data['processing_time_ms'] = round(processing_time * 1000, 1)
             return jsonify(latest_data)
         else:
-            return jsonify({ 'error': '無法獲取最新匯率，請稍後再試。', 'buy_currency': buy_currency, 'sell_currency': sell_currency }), 500
+            return jsonify({ 
+                'error': '無法獲取最新匯率，請稍後再試。', 
+                'buy_currency': buy_currency, 
+                'sell_currency': sell_currency,
+                'processing_time': round(processing_time, 3)
+            }), 500
     except Exception as e:
+        processing_time = time.time() - start_time
         app.logger.error(f"💥 API LATEST (ERROR): 在獲取 {buy_currency}-{sell_currency} 時發生嚴重錯誤: {e}", exc_info=True)
         return jsonify({
             "error": f"伺服器在處理請求時發生內部錯誤: {e}",
             "buy_currency": buy_currency,
-            "sell_currency": sell_currency
+            "sell_currency": sell_currency,
+            "processing_time": round(processing_time, 3)
         }), 500
 
 @app.route('/api/server_status')
@@ -1382,54 +1458,28 @@ def regenerate_chart():
 
 @app.route('/api/pregenerate_charts')
 def pregenerate_charts_api():
-    """智能預生成圖表API - 只生成需要的圖表"""
+    """
+    智能預生成圖表API - (Refactored)
+    此API現在作為一個觸發器，無論快取狀態如何，
+    都會啟動後端的圖表生成/通知流程。
+    """
     buy_currency = request.args.get('buy_currency', 'TWD')
     sell_currency = request.args.get('sell_currency', 'HKD')
-    force = request.args.get('force', 'false').lower() == 'true'
     
     try:
-        periods = [7, 30, 90, 180]
-        missing_periods = []
-        cached_periods = []
+        print(f"🚀 API觸發：請求為 {buy_currency}-{sell_currency} 啟動生成/通知流程...")
         
-        # 如果不是強制模式，檢查哪些期間需要生成
-        if not force:
-            for period in periods:
-                cache_key = f"chart_{buy_currency}_{sell_currency}_{period}"
-                cached_data = manager.lru_cache.get(cache_key)
-                
-                if cached_data and manager.is_cache_valid(period, buy_currency, sell_currency):
-                    cached_periods.append(period)
-                else:
-                    missing_periods.append(period)
-            
-            # 如果所有期間都已快取且有效，跳過預生成
-            if not missing_periods:
-                return jsonify({
-                    'success': True, 
-                    'skipped': True,
-                    'message': f'{buy_currency}-{sell_currency} 所有圖表已快取，跳過預生成',
-                    'cached_periods': cached_periods,
-                    'missing_periods': missing_periods
-                })
-        
-        # 執行預生成
-        print(f"🚀 智能預生成：{buy_currency}-{sell_currency}")
-        if not force and missing_periods:
-            print(f"   需要生成的期間：{missing_periods}")
-            print(f"   已快取的期間：{cached_periods}")
-        
+        # 直接調用核心的預生成函數。
+        # 此函數內部現在有自己的邏輯來處理 SSE 通知和防止重複任務。
         manager.pregenerate_all_charts(buy_currency, sell_currency)
         
         return jsonify({
             'success': True, 
-            'message': f'已觸發 {buy_currency}-{sell_currency} 圖表預生成',
-            'force_mode': force,
-            'cached_periods': cached_periods if not force else [],
-            'missing_periods': missing_periods if not force else periods
+            'message': f'已觸發 {buy_currency}-{sell_currency} 圖表預生成/通知流程。'
         })
         
     except Exception as e:
+        print(f"💥 API /api/pregenerate_charts 發生錯誤: {e}")
         return jsonify({
             'success': False, 
             'message': f'預生成圖表失敗: {str(e)}'
@@ -1472,4 +1522,4 @@ if __name__ == '__main__':
     scheduler_thread = Thread(target=run_scheduler, daemon=True)
     scheduler_thread.start()
 
-    app.run()
+    app.run(threaded=True)
