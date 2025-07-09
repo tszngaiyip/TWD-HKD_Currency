@@ -207,3 +207,45 @@ export function hideGlobalProgressBar(callback) {
       }
   }, 500); // 延遲 500ms 隱藏
 }
+
+/**
+ * 從 JSON 檔案載入貨幣並填充到指定的 <select> 元素中。
+ * @param {string} fromCurrencyId - 'from' 貨幣選擇器的 ID。
+ * @param {string} toCurrencyId - 'to' 貨幣選擇器的 ID。
+ */
+export async function populateCurrencySelectors(fromCurrencyId, toCurrencyId) {
+  try {
+    const response = await fetch('/static/currencies.json');
+    if (!response.ok) {
+      throw new Error(`無法載入貨幣列表：${response.statusText}`);
+    }
+    const currencies = await response.json();
+
+    const fromSelect = document.getElementById(fromCurrencyId);
+    const toSelect = document.getElementById(toCurrencyId);
+
+    if (!fromSelect || !toSelect) {
+      console.error('找不到指定的貨幣選擇器元素');
+      return;
+    }
+
+    // 清空現有選項
+    fromSelect.innerHTML = '';
+    toSelect.innerHTML = '';
+
+    // 填充選項
+    currencies.forEach(currency => {
+      const optionHtml = `<option value="${currency.code}">${currency.name} - ${currency.code}</option>`;
+      fromSelect.insertAdjacentHTML('beforeend', optionHtml);
+      toSelect.insertAdjacentHTML('beforeend', optionHtml);
+    });
+
+    // 設定預設值
+    fromSelect.value = 'TWD';
+    toSelect.value = 'HKD';
+
+  } catch (error) {
+    console.error('填充貨幣選擇器時出錯:', error);
+    showError('無法載入貨幣選項，請稍後重試。');
+  }
+}

@@ -8,7 +8,8 @@ import {
   updateGridStats,
   showGlobalProgressBar,
   updateGlobalProgressBar,
-  hideGlobalProgressBar
+  hideGlobalProgressBar,
+  populateCurrencySelectors
 } from './dom.js';
 
 let currentPeriod = 7;
@@ -324,6 +325,9 @@ const currencyManager = new CurrencyManager();
 
 // 頁面載入時自動載入圖表和最新匯率
 document.addEventListener('DOMContentLoaded', async function () {
+  // 首先填充貨幣選擇器
+  await populateCurrencySelectors('from-currency', 'to-currency');
+  
   try {
     const response = await fetch('/api/server_status');
     if (!response.ok) {

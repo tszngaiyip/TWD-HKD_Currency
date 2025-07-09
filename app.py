@@ -208,7 +208,7 @@ class RateLimiter:
 
             self.last_request_time = time.time()
 
-rate_limiter = RateLimiter(max_requests_per_second=8)
+rate_limiter = RateLimiter(max_requests_per_second=3)
 
 # 設定中文字體
 import matplotlib.font_manager as fm
@@ -517,7 +517,7 @@ class ExchangeRateManager:
 
         return date_str, None
 
-    def get_live_rates_for_period(self, days, buy_currency='TWD', sell_currency='HKD', max_workers=2):
+    def get_live_rates_for_period(self, days, buy_currency='TWD', sell_currency='HKD', max_workers=5):
         """獲取指定期間的即時匯率數據（並行查詢版本，並在過程中漸進式生成圖表）"""
         end_date = datetime.now()
         start_date = end_date - timedelta(days=days)
