@@ -1,5 +1,5 @@
 import { fetchChart, loadLatestRate, triggerPregeneration } from './api.js';
-import { handleChartError, updateStats, getPrecision } from './chart.js';
+import { handleChartError } from './chart.js';
 import { 
   displayLatestRate, 
   showRateError, 
@@ -98,11 +98,11 @@ class CurrencyManager {
 
   // 統一的貨幣切換入口
   async switchCurrencies(fromCurrency, toCurrency, source = 'manual') {
-    console.log(`🔄 切換貨幣: ${this.currentFromCurrency}-${this.currentToCurrency} → ${fromCurrency}-${toCurrency} (${source})`);
+    
     
     // 檢查是否可以切換
     if (!this.canSwitchCurrency()) {
-      console.log('⚠️ 系統忙碌中，無法切換貨幣');
+      
       return { success: false, reason: 'system_busy' };
     }
 
@@ -154,7 +154,7 @@ class CurrencyManager {
 
     // 步驟 1: 檢查前端短期快取
     if (chartCache[cacheKey]) {
-      console.log(`[Viewer] 從前端快取渲染圖表: ${cacheKey}`);
+      
       const chartData = chartCache[cacheKey];
       // 直接渲染，不發送任何請求
       renderChart(chartData.chart_url, chartData.stats, fromCurrency, toCurrency, period);
@@ -165,7 +165,7 @@ class CurrencyManager {
     }
 
     // 步驟 2: 如果前端快取未命中，觸發後端開始工作
-    console.log(`[Viewer] 前端快取未命中: ${cacheKey}。觸發後端生成/通知...`);
+    
     showGlobalProgressBar(`正在為您準備 ${fromCurrency}-${toCurrency} 的圖表...`);
     this.setLoading('chart', true); // 顯示加載動畫
     // 只觸發，不等待，不處理回應。UI 更新將由 SSE 事件驅動
@@ -185,7 +185,7 @@ class CurrencyManager {
       
       // 顯示處理時間信息
       if (rateData.processing_time) {
-        console.log(`💱 匯率載入完成 - 前端用時: ${finalTime.toFixed(2)}秒, 後端處理: ${rateData.processing_time}秒`);
+        
       }
     } catch (error) {
       console.error('匯率載入失敗:', error);
@@ -198,7 +198,7 @@ class CurrencyManager {
 
   // 觸發預生成（獨立執行，不阻塞）
   triggerPregeneration(fromCurrency, toCurrency) {
-    console.log(`🚀 觸發後端預生成 ${fromCurrency}-${toCurrency} 圖表...`);
+    
     fetch(`/api/pregenerate_charts?buy_currency=${fromCurrency}&sell_currency=${toCurrency}`)
       .then(response => {
         if (!response.ok) {
@@ -209,9 +209,9 @@ class CurrencyManager {
       .then(data => {
         if (data.success) {
           if (data.skipped) {
-            console.log(`⏭️ 預生成已跳過: ${data.message}`);
+            
           } else {
-            console.log(`✅ 預生成觸發成功: ${data.message}`);
+            
           }
         } else {
           // 如果後端回報失敗（例如，無效的貨幣）
@@ -344,7 +344,7 @@ document.addEventListener('DOMContentLoaded', async function () {
 
     if (currentServerId !== storedServerId) {
       // Server has restarted. Reset settings.
-      console.log('伺服器已重啟，正在重設貨幣選擇。');
+      
       sessionStorage.removeItem('fromCurrency');
       sessionStorage.removeItem('toCurrency');
       // Store the new server ID
@@ -696,7 +696,7 @@ function setupSSEConnection() {
   eventSource = new EventSource('/api/events');
 
   eventSource.onopen = function() {
-    console.log("[SSE] 連接已建立");
+    
     document.getElementById('sse-status-indicator').classList.add('connected');
     document.getElementById('sse-status-indicator').classList.remove('disconnected');
     document.getElementById('sse-status-indicator').title = 'SSE 已連接';
@@ -705,7 +705,7 @@ function setupSSEConnection() {
   eventSource.onerror = function(err) {
     // 當瀏覽器關閉或刷新頁面時，這是一個預期的行為，無需報錯
     if (eventSource.readyState === EventSource.CLOSED) {
-      console.log("[SSE] 連線已由客戶端正常關閉。");
+      
       return;
     }
     console.error("[SSE] 連接錯誤:", err);
@@ -717,13 +717,13 @@ function setupSSEConnection() {
 
   // 監聽後端發送的通用訊息
   eventSource.addEventListener('message', function(event) {
-    console.log("[SSE] 收到通用訊息:", event.data);
+    
   });
 
   // 監聽匯率更新事件
   eventSource.addEventListener('rate_updated', function(event) {
     const updateData = JSON.parse(event.data);
-    console.log('[SSE] 監聽到匯率更新:', updateData);
+    
     autoRefreshContent(updateData);
   });
   
@@ -741,7 +741,7 @@ function setupSSEConnection() {
     const data = JSON.parse(event.data);
     const { period, chart_info, buy_currency, sell_currency } = data;
     
-    console.log(`[SSE] 圖表就緒: ${period}天 (${buy_currency}-${sell_currency})`);
+    
 
     // 將收到的圖表資訊存入前端快取
     const cacheKey = `${buy_currency}_${sell_currency}_${period}`;
@@ -749,7 +749,7 @@ function setupSSEConnection() {
 
     // 如果這個就緒的圖表，正是使用者當前正在查看的週期和貨幣，則立即刷新圖表
     if (String(period) === String(currentPeriod) && buy_currency === currencyManager.currentFromCurrency && sell_currency === currencyManager.currentToCurrency) {
-        console.log(`[SSE] 就緒的圖表 (${period}天) 符合當前檢視，觸發刷新...`);
+        
         // 觸發 loadChart，它將從前端快取中讀取並渲染
         currencyManager.loadChart(); 
     }
@@ -764,7 +764,7 @@ function setupSSEConnection() {
  * 自動刷新頁面內容
  */
 function autoRefreshContent(updateData) {
-  console.log('🔄 收到服務器推送，自動刷新頁面內容...');
+  
 
   // 顯示自動更新提示
   showAutoUpdateNotification(updateData);

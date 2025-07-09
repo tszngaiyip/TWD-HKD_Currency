@@ -226,16 +226,7 @@ def regenerate_chart():
                 'message': '無法生成圖表，請檢查數據'
             }), 400
 
-        data_fingerprint, data_count = current_app.manager.get_data_fingerprint(days)
-        
-        cache_data = {
-            'chart': chart_data['chart_url'],
-            'stats': chart_data['stats'],
-            'generated_at': datetime.now().isoformat(),
-            'data_fingerprint': data_fingerprint,
-            'data_count': data_count
-        }
-        current_app.manager.lru_cache.put(f"chart_{buy_currency}_{sell_currency}_{days}", cache_data)
+        data_count = chart_data.get('stats', {}).get('data_points', 0)
 
         print(f"✅ 近{days}天圖表強制重新生成完成 (數據點:{data_count})")
 

@@ -69,22 +69,7 @@ class ExchangeRateManager:
         dates.sort()
         return dates
 
-    def is_cache_valid(self, days, buy_currency='TWD', sell_currency='HKD'):
-        """檢查緩存是否仍然有效，僅基於時間"""
-        cache_key = f"chart_{buy_currency}_{sell_currency}_{days}"
-        cached_info = self.lru_cache.get(cache_key)
-        
-        if cached_info is None:
-            return False, "緩存不存在"
-
-        # 雙重保險：檢查緩存時間（如果緩存超過24小時，則視為無效）
-        # LRU Cache 內部會處理 TTL，但這裡的檢查可以提供更清晰的日誌理由
-        cached_time = datetime.fromisoformat(cached_info['generated_at'])
-        time_diff = datetime.now() - cached_time
-        if time_diff.total_seconds() > 24 * 3600:  # 24小時
-            return False, f"緩存已過期 ({time_diff.days}天{time_diff.seconds//3600}小時前)"
-
-        return True, "緩存有效"
+    
 
     def get_exchange_rate(self, date, buy_currency='TWD', sell_currency='HKD'):
         """獲取指定日期的匯率"""

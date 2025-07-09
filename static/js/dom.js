@@ -1,5 +1,4 @@
 // static/js/dom.js
-import { getPrecision } from './chart.js';
 
 export function showError(message) {
   const errorEl = document.getElementById('error-message');

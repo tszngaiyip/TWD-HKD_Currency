@@ -16,6 +16,6 @@ export async function loadLatestRate(fromCurrency = 'TWD', toCurrency = 'HKD') {
 export function triggerPregeneration(fromCurrency = 'TWD', toCurrency = 'HKD') {
   fetch(`/api/pregenerate_charts?buy_currency=${fromCurrency}&sell_currency=${toCurrency}`)
     .then(response => response.json())
-    .then(data => console.log('🚀 預生成回應:', data))
+    
     .catch(error => console.error('❌ 預生成錯誤:', error));
 } 
