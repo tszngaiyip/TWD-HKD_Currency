@@ -1,243 +1,23 @@
-from flask import Flask, render_template, request, jsonify, Response
+import os
+import json
+import time
+import hashlib
 import requests
-import matplotlib
-matplotlib.use('Agg')  # 設定非GUI後端
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
-import matplotlib.dates as mdates
-import json
-import os
 from threading import Lock, Thread
-import schedule
-import time
-import queue
-import hashlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import concurrent.futures
-import uuid
 from matplotlib.ticker import MaxNLocator, FuncFormatter
+from flask import current_app
 
-app = Flask(__name__)
-SERVER_INSTANCE_ID = str(uuid.uuid4())
-
-# LRU Cache 類別
-class LRUCache:
-    def __init__(self, capacity, ttl_seconds=3600):
-        """
-        LRU Cache 實現
-        capacity: 快取容量
-        ttl_seconds: 過期時間（秒），預設1小時
-        """
-        self.capacity = capacity
-        self.ttl_seconds = ttl_seconds
-        self.cache = {}  # key -> {'value': value, 'timestamp': timestamp, 'ttl': ttl, 'is_pinned': bool}
-        self.access_order = []  # 存儲存取順序
-        self.pinned_keys = set() # 存儲不應被淘汰的鍵
-        self.lock = Lock()
-
-        # 統計資訊
-        self._total_requests = 0
-        self._cache_hits = 0
-
-    def get(self, key):
-        """獲取快取值"""
-        with self.lock:
-            self._total_requests += 1
-
-            if key not in self.cache:
-                return None
-
-            # 檢查是否過期
-            entry = self.cache[key]
-            current_time = time.time()
-            # 如果 ttl 為 None，表示永不過期
-            if entry.get('ttl') is not None and current_time - entry['timestamp'] > entry['ttl']:
-                # 過期，移除
-                self._remove_key(key)
-                return None
-
-            # 命中快取
-            self._cache_hits += 1
-
-            # 更新存取順序（移到最前面）
-            self.access_order.remove(key)
-            self.access_order.append(key)
-
-            return entry['value']
-
-    def put(self, key, value, ttl=None, is_pinned=False):
-        """設定快取值，ttl=None 表示使用默認 TTL，ttl=False 表示永不過期，is_pinned=True 表示永不淘汰"""
-        with self.lock:
-            current_time = time.time()
-
-            if ttl is False:
-                actual_ttl = None
-            elif ttl is None:
-                actual_ttl = self.ttl_seconds
-            else:
-                actual_ttl = ttl
-
-            if is_pinned:
-                self.pinned_keys.add(key)
-            else:
-                self.pinned_keys.discard(key) # 如果之前是固定的，現在不是了，就移除
-
-            if key in self.cache:
-                # 更新現有項目
-                self.cache[key] = {
-                    'value': value,
-                    'timestamp': current_time,
-                    'ttl': actual_ttl,
-                    'is_pinned': is_pinned
-                }
-                # 更新存取順序
-                if key in self.access_order:
-                    self.access_order.remove(key)
-                self.access_order.append(key)
-            else:
-                # 新增項目
-                # 檢查容量（但永不過期的項目不會被 LRU 淘汰）
-                if len(self.cache) >= self.capacity:
-                    # 找出最久未使用且可淘汰的項目
-                    self._evict_lru_item()
-
-                self.cache[key] = {
-                    'value': value,
-                    'timestamp': current_time,
-                    'ttl': actual_ttl,
-                    'is_pinned': is_pinned
-                }
-                self.access_order.append(key)
-
-    def _evict_lru_item(self):
-        """淘汰最久未使用的項目（但跳過永不過期或被固定的項目）"""
-        for key in list(self.access_order): # 遍歷副本以允許修改原列表
-            entry = self.cache.get(key)
-            if entry and not entry.get('is_pinned', False) and entry.get('ttl') is not None:
-                self._remove_key(key)
-                return
-        # 如果所有項目都是永不過期或被固定的，或者沒有可淘汰的項目，則不執行任何操作
-        # 這裡不需要額外的處理，因為如果所有項目都是固定的，就不應該淘汰
-
-    def _remove_key(self, key):
-        """移除指定的鍵（內部方法，不加鎖）"""
-        if key in self.cache:
-            del self.cache[key]
-            if key in self.access_order:
-                self.access_order.remove(key)
-            self.pinned_keys.discard(key) # 確保從固定鍵集合中移除
-
-    def clear_expired(self):
-        """清理過期項目（跳過永不過期的項目）"""
-        with self.lock:
-            current_time = time.time()
-            expired_keys = []
-
-            for key, entry in self.cache.items():
-                # 只清理有 TTL 且已過期的項目
-                if (entry.get('ttl') is not None and
-                    current_time - entry['timestamp'] > entry['ttl']):
-                    expired_keys.append(key)
-
-            for key in expired_keys:
-                self._remove_key(key)
-
-            return len(expired_keys)
-
-    def size(self):
-        """獲取快取大小"""
-        with self.lock:
-            return len(self.cache)
-
-    def clear(self):
-        """清空快取"""
-        with self.lock:
-            self.cache.clear()
-            self.access_order.clear()
-
-    def get_stats(self):
-        """獲取快取統計資訊"""
-        with self.lock:
-            current_time = time.time()
-            expired_count = 0
-            permanent_count = 0
-
-            for entry in self.cache.values():
-                if entry.get('ttl') is None:
-                    # 永不過期的項目
-                    permanent_count += 1
-                elif current_time - entry['timestamp'] > entry['ttl']:
-                    # 已過期的項目
-                    expired_count += 1
-
-            # 從內部統計獲取命中率
-            total_requests = getattr(self, '_total_requests', 0)
-            cache_hits = getattr(self, '_cache_hits', 0)
-            hit_rate = (cache_hits / total_requests * 100) if total_requests > 0 else 0
-
-            return {
-                'total_items': len(self.cache),
-                'expired_items': expired_count,
-                'permanent_items': permanent_count,
-                'valid_items': len(self.cache) - expired_count,
-                'capacity': self.capacity,
-                'usage_ratio': len(self.cache) / self.capacity if self.capacity > 0 else 0,
-                'hit_rate': hit_rate,
-                'total_requests': total_requests,
-                'cache_hits': cache_hits,
-                'cache_misses': total_requests - cache_hits
-            }
-
-# 速率限制器類別
-class RateLimiter:
-    def __init__(self, max_requests_per_second):
-        self.max_requests_per_second = max_requests_per_second
-        self.min_interval = 1.0 / max_requests_per_second
-        self.last_request_time = 0
-        self.lock = Lock()
-
-    def wait_if_needed(self):
-        """如果需要的話，等待以符合速率限制"""
-        with self.lock:
-            current_time = time.time()
-            time_since_last = current_time - self.last_request_time
-
-            if time_since_last < self.min_interval:
-                sleep_time = self.min_interval - time_since_last
-                time.sleep(sleep_time)
-
-            self.last_request_time = time.time()
-
-rate_limiter = RateLimiter(max_requests_per_second=3)
-
-# 設定中文字體
-import matplotlib.font_manager as fm
-
-# 檢查專案字體文件夾中的字體
-font_path = os.path.join(os.path.dirname(__file__), 'fonts', 'NotoSansTC-Regular.ttf')
-
-if os.path.exists(font_path):
-    # 使用專案內的字體文件
-    fm.fontManager.addfont(font_path)
-    font_prop = fm.FontProperties(fname=font_path)
-    plt.rcParams['font.sans-serif'] = [font_prop.get_name()]
-else:
-    # 嘗試使用系統字體
-    try:
-        plt.rcParams['font.sans-serif'] = ['Noto Sans CJK TC']
-        print("使用系統字體: Noto Sans CJK TC")
-    except:
-        plt.rcParams['font.sans-serif'] = ['DejaVu Sans']
-        print("警告: 未找到中文字體，請將 NotoSansTC-Regular.ttf 放入 fonts/ 資料夾")
-
-plt.rcParams['axes.unicode_minus'] = False
+from .utils import LRUCache, RateLimiter
+from .sse import send_sse_event
 
 # 數據文件路徑
 DATA_FILE = 'TWD-HKD_180d.json'
+rate_limiter = RateLimiter(max_requests_per_second=5)
 
-# SSE 連接管理
-sse_clients = []
-sse_lock = Lock()
 
 class ExchangeRateManager:
     def __init__(self):
@@ -289,47 +69,16 @@ class ExchangeRateManager:
         dates.sort()
         return dates
 
-    def get_data_fingerprint(self, days):
-        """獲取指定期間數據的指紋，用於檢查數據是否有變化"""
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=days)
-
-        relevant_data = {}
-        current_date = start_date
-        while current_date <= end_date:
-            date_str = current_date.strftime('%Y-%m-%d')
-            if date_str in self.data:
-                relevant_data[date_str] = self.data[date_str]['rate']
-            current_date += timedelta(days=1)
-
-        # 創建數據指紋
-        data_str = json.dumps(relevant_data, sort_keys=True)
-        fingerprint = hashlib.md5(data_str.encode()).hexdigest()
-        return fingerprint, len(relevant_data)
-
     def is_cache_valid(self, days, buy_currency='TWD', sell_currency='HKD'):
-        """檢查緩存是否仍然有效，支援多貨幣對"""
-        # 使用 LRU cache 而不是全域 dict
+        """檢查緩存是否仍然有效，僅基於時間"""
         cache_key = f"chart_{buy_currency}_{sell_currency}_{days}"
         cached_info = self.lru_cache.get(cache_key)
         
         if cached_info is None:
             return False, "緩存不存在"
 
-        # 檢查緩存是否有數據指紋
-        if 'data_fingerprint' not in cached_info:
-            return False, "緩存缺少數據指紋"
-
-        # 對於 TWD-HKD，檢查數據指紋是否匹配
-        if buy_currency == 'TWD' and sell_currency == 'HKD':
-            # 獲取當前數據指紋
-            current_fingerprint, current_data_count = self.get_data_fingerprint(days)
-
-            # 比較指紋
-            if cached_info['data_fingerprint'] != current_fingerprint:
-                return False, f"數據已更新 (當前{current_data_count}筆數據)"
-
-        # 檢查緩存時間（如果緩存超過24小時，重新生成）
+        # 雙重保險：檢查緩存時間（如果緩存超過24小時，則視為無效）
+        # LRU Cache 內部會處理 TTL，但這裡的檢查可以提供更清晰的日誌理由
         cached_time = datetime.fromisoformat(cached_info['generated_at'])
         time_diff = datetime.now() - cached_time
         if time_diff.total_seconds() > 24 * 3600:  # 24小時
@@ -612,92 +361,82 @@ class ExchangeRateManager:
 
         return dates, rates
 
-    def _background_fetch_and_generate(self, buy_currency, sell_currency):
+    def _background_fetch_and_generate(self, buy_currency, sell_currency, flask_app):
         """
         [REFACTORED]
         非同步抓取180天歷史數據，並在過程中流式生成圖表、發送進度。
         """
-        try:
-            print(f"🌀 事件驅動背景任務開始：為 {buy_currency}-{sell_currency} 抓取180天數據。")
+        with flask_app.app_context():
+            try:
+                print(f"🌀 事件驅動背景任務開始：為 {buy_currency}-{sell_currency} 抓取180天數據。")
 
-            # 1. 收集過去180天的所有工作日日期，從新到舊排序以優先獲取最新數據
-            end_date = datetime.now()
-            start_date = end_date - timedelta(days=180)
-            query_dates = []
-            current_date = end_date
-            while current_date >= start_date:
-                if current_date.weekday() < 5:
-                    query_dates.append(current_date)
-                current_date -= timedelta(days=1)
+                # 1. 收集日期，從最新到最舊
+                end_date = datetime.now()
+                start_date = end_date - timedelta(days=180)
+                query_dates = sorted([d for d in (end_date - timedelta(days=i) for i in range(181)) if d.weekday() < 5], reverse=True)
+                total_days_to_fetch = len(query_dates)
 
-            total_days_to_fetch = len(query_dates)
-            if total_days_to_fetch == 0:
-                print(f"🔚 {buy_currency}-{sell_currency}: 無需抓取任何日期。")
-                return
+                if total_days_to_fetch == 0:
+                    print(f"🔚 {buy_currency}-{sell_currency}: 無需抓取任何日期。")
+                    return
 
-            # 2. 初始化變量
-            rates_data = {}
-            fetched_count = 0
-            generated_periods = set()
-            # 定義生成圖表的數據點檢查點 (日曆天數 -> 約略工作天數)
-            chart_generation_checkpoints = {
-                7: 5,
-                30: 21,
-                90: 65,
-                180: 129
-            }
-            periods_to_check = sorted(chart_generation_checkpoints.keys())
+                # 2. 初始化變量
+                rates_data = {}
+                fetched_count = 0
+                generated_periods = set()
+                chart_generation_checkpoints = {7: 5, 30: 21, 90: 65, 180: 129}
 
-            # 3. 逐日抓取數據並在過程中處理
-            for date in query_dates:
-                # 獲取單一匯率
-                date_str, rate = self._fetch_single_rate(date, buy_currency, sell_currency)
-                fetched_count += 1
-                
-                if rate is not None:
-                    rates_data[date_str] = rate
+                # 3. 並行抓取
+                with ThreadPoolExecutor(max_workers=5, thread_name_prefix='RateFetch') as executor:
+                    future_to_date = {executor.submit(self._fetch_single_rate, d, buy_currency, sell_currency): d for d in query_dates}
+                    
+                    for future in as_completed(future_to_date):
+                        date_str, rate = future.result()
+                        fetched_count += 1
+                        if rate is not None:
+                            rates_data[date_str] = rate
 
-                # 計算並發送進度
-                progress = int((fetched_count / total_days_to_fetch) * 100)
-                send_sse_event('progress_update', {
-                    'progress': progress,
-                    'buy_currency': buy_currency,
-                    'sell_currency': sell_currency,
-                    'message': f'正在獲取 {date_str} 的數據... ({fetched_count}/{total_days_to_fetch})'
-                })
-                
-                # 檢查是否達到生成圖表的檢查點
-                successful_fetches = len(rates_data)
-                
-                for period in periods_to_check:
-                    required_points = chart_generation_checkpoints[period]
-                    # 如果尚未生成此週期的圖表，並且我們擁有的數據點足夠
-                    if period not in generated_periods and successful_fetches >= required_points:
-                        # 使用 regenerate_chart_data 生成圖表
+                        # 發送進度更新
+                        progress = int((fetched_count / total_days_to_fetch) * 100)
+                        send_sse_event('progress_update', {'progress': progress, 'buy_currency': buy_currency, 'sell_currency': sell_currency, 'message': f'已獲取 {fetched_count}/{total_days_to_fetch} 天數據...'})
+
+                        # 4. 帶前置條件的漸進式生成
+                        for period in chart_generation_checkpoints:
+                            if period not in generated_periods and len(rates_data) >= chart_generation_checkpoints[period]:
+                                # 檢查是否有足夠時間範圍的數據
+                                required_start_date = end_date - timedelta(days=period)
+                                has_relevant_data = any(datetime.strptime(d, '%Y-%m-%d') >= required_start_date for d in rates_data)
+                                
+                                if has_relevant_data:
+                                    chart_info = self.regenerate_chart_data(period, buy_currency, sell_currency, live_rates_data=rates_data)
+                                    if chart_info:
+                                        print(f"✅ 背景任務：成功生成並快取了 {period} 天圖表。")
+                                        generated_periods.add(period)
+                                        send_sse_event('chart_ready', {'period': period, 'chart_info': chart_info, 'buy_currency': buy_currency, 'sell_currency': sell_currency})
+
+                # 5. 最終補全
+                final_periods_to_generate = set(chart_generation_checkpoints.keys()) - generated_periods
+                if final_periods_to_generate:
+                    print(f"背景任務：獲取完所有數據，嘗試補全未生成的圖表: {final_periods_to_generate}")
+                    for period in final_periods_to_generate:
                         chart_info = self.regenerate_chart_data(period, buy_currency, sell_currency, live_rates_data=rates_data)
-                        
                         if chart_info:
-                            send_sse_event('chart_ready', {
-                                'period': period,
-                                'chart_info': chart_info,
-                                'buy_currency': buy_currency,
-                                'sell_currency': sell_currency
-                            })
                             generated_periods.add(period)
-                        else:
-                            print(f"⚠️ 生成 {period} 天圖表失敗({buy_currency}-{sell_currency})，數據可能不足或發生錯誤。")
+                            # 即使是補全，也要通知前端
+                            send_sse_event('chart_ready', {'period': period, 'chart_info': chart_info, 'buy_currency': buy_currency, 'sell_currency': sell_currency})
 
+                # 6. 最終日誌
+                if len(generated_periods) == 4:
+                    print(f"✅ 背景任務圓滿完成: {buy_currency}-{sell_currency} 的全部4張圖表均已生成。")
+                else:
+                    print(f"⚠️ 背景任務結束，但有缺漏: 為 {buy_currency}-{sell_currency} 生成了 {len(generated_periods)}/{4} 張圖表。")
 
-            print(f"📈 事件驅動背景任務完成 ({buy_currency}-{sell_currency})。")
-
-        except Exception as e:
-            print(f"‼️ 背景任務錯誤 ({buy_currency}-{sell_currency}): {e}")
-            import traceback
-            traceback.print_exc()
-        finally:
-            with self._active_fetch_lock:
-                self._active_fetches.discard((buy_currency, sell_currency))
-                print(f"🔚 背景任務結束 ({buy_currency}-{sell_currency})。")
+            except Exception as e:
+                print(f"❌ 背景任務失敗 ({buy_currency}-{sell_currency}): {e}", exc_info=True)
+            finally:
+                with self._active_fetch_lock:
+                    self._active_fetches.discard((buy_currency, sell_currency))
+                    print(f"🔑 背景任務解鎖: {buy_currency}-{sell_currency}。")
 
     def create_chart(self, days, buy_currency, sell_currency):
         """創建圖表（帶 LRU Cache 和背景抓取協調）"""
@@ -783,27 +522,33 @@ class ExchangeRateManager:
             all_rates = [live_rates_data[d] for d in all_dates_str]
             is_pinned = False
 
-        # 生成圖表並獲取 URL
+        # --- 數據獲取完成後 ---
+        if not all_dates_str or not all_rates:
+            return None # 沒有足夠數據生成圖表
+
+        # --- 生成圖表和統計數據 ---
         chart_url = self.create_chart_from_data(days, all_dates_str, all_rates, buy_currency, sell_currency)
         if not chart_url:
             return None
 
-        # 獲取新的數據指紋和統計數據
-        data_fingerprint, data_count = self.get_data_fingerprint(days)
-        stats = self._calculate_stats(all_rates, all_dates_str)
-
-        # 存入新數據到快取
-        cache_key = f"chart_{buy_currency}_{sell_currency}_{days}"
-        new_cache_data = {
+        all_dates_obj = [datetime.strptime(d, '%Y-%m-%d') for d in all_dates_str]
+        stats = self._calculate_stats(all_rates, [d.strftime('%Y-%m-%d') for d in all_dates_obj])
+        
+        # --- 建立完整的圖表資訊對象 (已移除數據指紋) ---
+        chart_info = {
             'chart_url': chart_url,
             'stats': stats,
             'generated_at': datetime.now().isoformat(),
-            'data_fingerprint': data_fingerprint,
-            'data_count': data_count
+            'is_pinned': is_pinned
         }
-        self.lru_cache.put(cache_key, new_cache_data, is_pinned=is_pinned)
         
-        return new_cache_data
+        # --- 更新快取 ---
+        # 這是關鍵的修復：確保 regenerate_chart_data 自身就能更新快取
+        cache_key = f"chart_{buy_currency}_{sell_currency}_{days}"
+        self.lru_cache.put(cache_key, chart_info)
+        current_app.logger.info(f"💾 CACHE SET (from regenerate): Stored chart for {buy_currency}-{sell_currency} ({days} days)")
+
+        return chart_info
 
     def create_chart_from_data(self, days, all_dates_str, all_rates, buy_currency, sell_currency):
         """
@@ -960,38 +705,41 @@ class ExchangeRateManager:
 
         if buy_currency == 'TWD' and sell_currency == 'HKD':
             periods = [7, 30, 90, 180]
-            
+            app = current_app._get_current_object() # 獲取當前的應用實例
+
             # 為 TWD-HKD 創建一個包含通知的生成器
-            def generate_and_notify(period):
-                try:
-                    # 1. 生成圖表
-                    chart_info = self.regenerate_chart_data(period, buy_currency, sell_currency)
-                    
-                    if chart_info and chart_info.get('chart_url'):
-                        print(f"  ✅ 預生成 {buy_currency}-{sell_currency} {period} 天圖表成功")
-                        # 2. 發送 SSE 通知事件
-                        send_sse_event('chart_ready', {
-                            'period': period,
-                            'chart_info': chart_info,
-                            'buy_currency': buy_currency,
-                            'sell_currency': sell_currency
-                        })
-                    else:
-                        print(f"  ❌ 預生成 {buy_currency}-{sell_currency} {period} 天圖表失敗")
-                except Exception as e:
-                    print(f"  ❌ 預生成 {buy_currency}-{sell_currency} {period} 天圖表時發生錯誤: {e}")
+            def generate_and_notify(manager_instance, period, flask_app):
+                with flask_app.app_context():
+                    try:
+                        # 1. 生成圖表
+                        chart_info = manager_instance.regenerate_chart_data(period, buy_currency, sell_currency)
+                        
+                        if chart_info and chart_info.get('chart_url'):
+                            print(f"  ✅ 預生成 {buy_currency}-{sell_currency} {period} 天圖表成功")
+                            # 2. 發送 SSE 通知事件
+                            send_sse_event('chart_ready', {
+                                'period': period,
+                                'chart_info': chart_info,
+                                'buy_currency': buy_currency,
+                                'sell_currency': sell_currency
+                            })
+                        else:
+                            print(f"  ❌ 預生成 {buy_currency}-{sell_currency} {period} 天圖表失敗")
+                    except Exception as e:
+                        print(f"  ❌ 預生成 {buy_currency}-{sell_currency} {period} 天圖表時發生錯誤: {e}")
 
             # 使用線程池並行執行，包含通知
             with ThreadPoolExecutor(max_workers=4) as executor:
                 for period in periods:
-                    executor.submit(generate_and_notify, period)
+                    executor.submit(generate_and_notify, self, period, app)
         else:
-            # 對於其他貨幣對，只需確保背景任務正在運行（此邏輯已是事件驅動）
+            # 對於其他貨幣對，啟動背景抓取任務，並傳遞 app context
             with self._active_fetch_lock:
                 if (buy_currency, sell_currency) not in self._active_fetches:
                     print(f"🌀 預生成: {buy_currency}-{sell_currency} 的背景抓取尚未啟動，現在開始...")
                     self._active_fetches.add((buy_currency, sell_currency))
-                    self.background_executor.submit(self._background_fetch_and_generate, buy_currency, sell_currency)
+                    app = current_app._get_current_object() # 獲取 app 實例
+                    self.background_executor.submit(self._background_fetch_and_generate, buy_currency, sell_currency, app)
                 else:
                     print(f"✅ 預生成: {buy_currency}-{sell_currency} 的背景抓取已在進行中。")
 
@@ -1036,7 +784,7 @@ class ExchangeRateManager:
         """
         # --- 優先處理 TWD-HKD: 從本地 JSON 數據獲取 ---
         if buy_currency == 'TWD' and sell_currency == 'HKD':
-            app.logger.info(f"從本地文件獲取 TWD-HKD 最新匯率")
+            current_app.logger.info(f"從本地文件獲取 TWD-HKD 最新匯率")
             with self.data_lock:
                 if not self.data:
                     return None
@@ -1069,13 +817,13 @@ class ExchangeRateManager:
         # 1. 嘗試從快取中獲取數據
         cached_rate = self.latest_rate_cache.get(cache_key)
         if cached_rate:
-            app.logger.info(f"✅ API LATEST (CACHE): {buy_currency}-{sell_currency} - 成功從快取提供")
+            current_app.logger.info(f"✅ API LATEST (CACHE): {buy_currency}-{sell_currency} - 成功從快取提供")
             response_data = cached_rate.copy()
             response_data['source'] = 'cache'
             return response_data
 
         # 2. 如果快取未命中，則從 API 即時抓取
-        app.logger.info(f"🔄 API LATEST (FETCH): {buy_currency}-{sell_currency} - 快取未命中，嘗試從 API 獲取...")
+        current_app.logger.info(f"🔄 API LATEST (FETCH): {buy_currency}-{sell_currency} - 快取未命中，嘗試從 API 獲取...")
         current_date = datetime.now()
         while current_date.weekday() >= 5: # 尋找最近的工作日
             current_date -= timedelta(days=1)
@@ -1083,7 +831,7 @@ class ExchangeRateManager:
         rate_data = self.get_exchange_rate(current_date, buy_currency, sell_currency)
 
         if not rate_data or 'data' not in rate_data:
-            app.logger.error(f"❌ API LATEST (FAIL): {buy_currency}-{sell_currency} - API 抓取失敗。")
+            current_app.logger.error(f"❌ API LATEST (FAIL): {buy_currency}-{sell_currency} - API 抓取失敗。")
             return None
 
         # 3. 解析成功後，將新數據存入快取
@@ -1096,7 +844,7 @@ class ExchangeRateManager:
                 'updated_time': datetime.now().isoformat()
             }
             self.latest_rate_cache.put(cache_key, latest_data)
-            app.logger.info(f"💾 API LATEST (STORE): {buy_currency}-{sell_currency} - 成功獲取並存入快取")
+            current_app.logger.info(f"💾 API LATEST (STORE): {buy_currency}-{sell_currency} - 成功獲取並存入快取")
             
             # 計算過去各期間最低匯率，優先 7, 30, 90, 180
             lowest_rate = None
@@ -1120,434 +868,5 @@ class ExchangeRateManager:
             latest_data['sell_currency'] = sell_currency
             return latest_data
         except (KeyError, ValueError, TypeError) as e:
-            app.logger.error(f"❌ API LATEST (PARSE FAIL): 為 {buy_currency}-{sell_currency} 解析即時抓取數據時出錯: {e}")
-            return None
-
-# 創建管理器實例
-manager = ExchangeRateManager()
-
-# SSE 相關函數
-def send_sse_event(event_type, data):
-    """發送SSE事件給所有連接的客戶端"""
-    with sse_lock:
-        message = f"event: {event_type}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
-
-        # 清理邏輯已移至 sse_stream 的 finally 區塊中，此處只需遍歷發送
-        for client_queue in list(sse_clients): # 遍歷副本以提高並行安全性
-            try:
-                # 使用 nowait 避免阻塞，因為隊列無限大，理論上不應滿
-                client_queue.put_nowait(message)
-            except queue.Full:
-                # 雖然理論上不會發生，但作為預防措施
-                print(f"[SSE] 警告：客戶端隊列已滿，訊息可能遺失。")
-
-        if sse_clients:
-            print(f"[SSE] 已向 {len(sse_clients)} 個客戶端發送 {event_type} 事件")
-
-def sse_stream(client_queue):
-    """SSE數據流生成器"""
-    try:
-        while True:
-            try:
-                message = client_queue.get(timeout=30)  # 30秒超時
-                yield message
-            except queue.Empty:
-                # 發送心跳包保持連接
-                yield "event: heartbeat\ndata: {}\n\n"
-    except GeneratorExit:
-        # 當客戶端斷開連接時，Flask/Werkzeug 會引發 GeneratorExit
-        print("[SSE] 客戶端已斷開連接 (GeneratorExit)。")
-    finally:
-        # 無論如何都從列表中移除客戶端
-        with sse_lock:
-            try:
-                sse_clients.remove(client_queue)
-                print(f"[SSE] 客戶端已清除，剩餘連接數: {len(sse_clients)}")
-            except ValueError:
-                # 如果隊列因為某些原因已經被移除，忽略錯誤
-                pass
-
-# 定時更新函數
-def scheduled_update():
-    """定時更新匯率資料"""
-    try:
-        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 開始執行定時更新...")
-        today = datetime.now()
-        today_str = today.strftime('%Y-%m-%d')
-
-        # 檢查今天的資料是否已存在
-        if today_str in manager.data:
-            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 今天({today_str})的資料已存在，無需更新")
-            return
-
-        # 只獲取今天的資料
-        print(f"正在獲取 {today_str} 的匯率資料...")
-        data = manager.get_exchange_rate(today)
-
-        if data and 'data' in data:
-            try:
-                conversion_rate = float(data['data']['conversionRate'])
-                manager.data[today_str] = {
-                    'rate': conversion_rate,
-                    'updated': datetime.now().isoformat()
-                }
-                manager.save_data()
-                print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 定時更新完成，成功獲取今天的匯率: {conversion_rate}")
-
-                # 預生成所有圖表
-                manager.pregenerate_all_charts()
-
-                # 發送SSE事件通知前端更新
-                send_sse_event('rate_updated', {
-                    'date': today_str,
-                    'rate': conversion_rate,  # 保持原始匯率
-                    'updated_time': datetime.now().isoformat(),
-                    'message': f'成功獲取 {today_str} 的匯率資料'
-                })
-
-            except (KeyError, ValueError) as e:
-                print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 解析今天的資料時發生錯誤: {e}")
-        else:
-            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 無法獲取今天的匯率資料")
-
-    except Exception as e:
-        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 定時更新失敗: {str(e)}")
-
-# 啟動定時任務的背景執行緒
-def run_scheduler():
-    """在背景執行緒中執行定時任務"""
-    while True:
-        schedule.run_pending()
-        time.sleep(60)  # 每分鐘檢查一次
-
-# 設定定時任務
-schedule.every().day.at("09:00").do(scheduled_update)
-# 每小時清理一次過期快取
-schedule.every().hour.do(lambda: manager.clear_expired_cache())
-
-@app.route('/')
-def index():
-    """主頁面"""
-    return render_template('index.html')
-
-@app.route('/api/chart')
-def get_chart():
-    """獲取圖表API - 支援多幣種並統一使用伺服器快取"""
-    import time
-    start_time = time.time()
-    
-    period = request.args.get('period', '7')
-    buy_currency = request.args.get('buy_currency', 'TWD')
-    sell_currency = request.args.get('sell_currency', 'HKD')
-    force_live = request.args.get('force_live', 'false').lower() == 'true'
-
-    try:
-        days = int(period)
-    except ValueError:
-        days = 7
-
-    try:
-        # 統一使用 create_chart，由其內部判斷數據來源和快取邏輯
-        chart_data = manager.create_chart(days, buy_currency, sell_currency)
-
-        # 計算處理時間
-        processing_time = time.time() - start_time
-        
-        if chart_data and chart_data.get('chart_url'):
-            chart_data['processing_time'] = round(processing_time, 3)
-            chart_data['processing_time_ms'] = round(processing_time * 1000, 1)
-            return jsonify(chart_data)
-        else:
-            return jsonify({'error': '無法生成圖表', 'no_data': True, 'processing_time': round(processing_time, 3)}), 500
-            
-    except Exception as e:
-        processing_time = time.time() - start_time
-        print(f"處理圖表請求時發生未預期的錯誤: {e}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({'error': '伺服器內部錯誤', 'processing_time': round(processing_time, 3)}), 500
-
-@app.route('/api/data_status')
-def data_status():
-    """檢查數據狀態"""
-    total_records = len(manager.data)
-
-    if total_records > 0:
-        dates = manager.get_sorted_dates()
-        earliest_date = dates[0]
-        latest_date = dates[-1]
-
-        # 計算數據覆蓋天數
-        earliest = datetime.strptime(earliest_date, '%Y-%m-%d')
-        latest = datetime.strptime(latest_date, '%Y-%m-%d')
-        data_span_days = (latest - earliest).days + 1
-    else:
-        earliest_date = None
-        latest_date = None
-        data_span_days = 0
-
-    return jsonify({
-        'total_records': total_records,
-        'earliest_date': earliest_date,
-        'latest_date': latest_date,
-        'data_span_days': data_span_days,
-        'data_retention_policy': '保留最近 180 天的資料',
-        'last_updated': datetime.now().isoformat()
-    })
-
-@app.route('/api/latest_rate')
-def get_latest_rate():
-    """獲取最新匯率的API端點，完全依賴 ExchangeRateManager 處理"""
-    import time
-    start_time = time.time()
-    
-    buy_currency = request.args.get('buy_currency', 'TWD')
-    sell_currency = request.args.get('sell_currency', 'HKD')
-    
-    try:
-        latest_data = manager.get_latest_rate_with_fallback(buy_currency, sell_currency)
-        
-        # 計算處理時間
-        processing_time = time.time() - start_time
-        
-        if latest_data:
-            # 判斷目前匯率是否為近7/30/90/180天內最低（代表最好）
-            current_rate = latest_data['rate']
-            is_best = False
-            for p in [7, 30, 90, 180]:
-                dates, rates = manager.get_historical_rates_for_period(p)
-                if rates and current_rate <= min(rates):
-                    latest_data['best_period'] = p
-                    latest_data['is_best'] = True
-                    is_best = True
-                    break
-            if not is_best:
-                # 若非任何區間最低，顯示近30天最低
-                dates30, rates30 = manager.get_historical_rates_for_period(30)
-                if rates30:
-                    latest_data['lowest_rate'] = min(rates30)
-                    latest_data['lowest_period'] = 30
-                latest_data['is_best'] = False
-            # 加入貨幣代碼和處理時間
-            latest_data['buy_currency'] = buy_currency
-            latest_data['sell_currency'] = sell_currency
-            latest_data['processing_time'] = round(processing_time, 3)
-            latest_data['processing_time_ms'] = round(processing_time * 1000, 1)
-            return jsonify(latest_data)
-        else:
-            return jsonify({ 
-                'error': '無法獲取最新匯率，請稍後再試。', 
-                'buy_currency': buy_currency, 
-                'sell_currency': sell_currency,
-                'processing_time': round(processing_time, 3)
-            }), 500
-    except Exception as e:
-        processing_time = time.time() - start_time
-        app.logger.error(f"💥 API LATEST (ERROR): 在獲取 {buy_currency}-{sell_currency} 時發生嚴重錯誤: {e}", exc_info=True)
-        return jsonify({
-            "error": f"伺服器在處理請求時發生內部錯誤: {e}",
-            "buy_currency": buy_currency,
-            "sell_currency": sell_currency,
-            "processing_time": round(processing_time, 3)
-        }), 500
-
-@app.route('/api/server_status')
-def server_status_api():
-    """提供伺服器實例ID，用於客戶端檢測伺服器重啟"""
-    return jsonify({'server_instance_id': SERVER_INSTANCE_ID})
-
-@app.route('/api/schedule_status')
-def get_schedule_status():
-    """獲取定時任務狀態API"""
-    try:
-        jobs = schedule.jobs
-        next_run_time = None
-
-        if jobs:
-            # 獲取下一次執行時間
-            next_run_time = min(job.next_run for job in jobs).strftime('%Y-%m-%d %H:%M:%S')
-
-        return jsonify({
-            'success': True,
-            'data': {
-                'is_active': len(jobs) > 0,
-                'next_run_time': next_run_time,
-                'scheduled_time': '每天 09:00',
-                'current_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            }
-        })
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'message': f'獲取定時任務狀態失敗: {str(e)}'
-        }), 500
-
-@app.route('/api/trigger_scheduled_update')
-def trigger_scheduled_update():
-    """手動觸發定時更新API"""
-    try:
-        scheduled_update()
-        return jsonify({
-            'success': True,
-            'message': '定時更新已手動觸發完成'
-        })
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'message': f'手動觸發定時更新失敗: {str(e)}'
-        }), 500
-
-@app.route('/api/force_cleanup_data')
-def force_cleanup_data():
-    """強制清理並更新近180天資料API"""
-    try:
-        print("🔄 強制執行180天資料清理...")
-        old_count = len(manager.data)
-
-        # 強制更新近180天資料（會自動清理超過180天的舊資料）
-        updated_count = manager.update_data(180)
-        new_count = len(manager.data)
-        removed_count = old_count - new_count + updated_count
-
-        message = f"清理完成！原有 {old_count} 筆資料，現有 {new_count} 筆資料"
-        if removed_count > 0:
-            message += f"，已移除 {removed_count} 筆超過180天的舊資料"
-        if updated_count > 0:
-            message += f"，更新了 {updated_count} 筆新資料"
-
-        print(f"✅ {message}")
-
-        return jsonify({
-            'success': True,
-            'message': message,
-            'old_count': old_count,
-            'new_count': new_count,
-            'removed_count': max(0, removed_count),
-            'updated_count': updated_count,
-            'cleaned_at': datetime.now().isoformat()
-        })
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'message': f'強制清理資料失敗: {str(e)}'
-        }), 500
-
-@app.route('/api/regenerate_chart')
-def regenerate_chart():
-    """強制重新生成圖表API"""
-    try:
-        period = request.args.get('period', '7')
-        buy_currency = request.args.get('buy_currency', 'TWD')
-        sell_currency = request.args.get('sell_currency', 'HKD')
-
-        try:
-            days = int(period)
-            if days not in [7, 30, 90, 180]:
-                days = 7
-        except:
-            days = 7
-
-        # 重新生成圖表
-        print(f"🔄 強制重新生成 {buy_currency}->{sell_currency} 近{days}天圖表...")
-        chart_data = manager.create_chart(days, buy_currency, sell_currency)
-
-        if chart_data is None:
-            return jsonify({
-                'success': False,
-                'message': '無法生成圖表，請檢查數據'
-            }), 400
-
-        # 獲取數據指紋並保存到緩存（使用 LRU cache）
-        data_fingerprint, data_count = manager.get_data_fingerprint(days)
-        
-        cache_data = {
-            'chart': chart_data['chart_url'],
-            'stats': chart_data['stats'],
-            'generated_at': datetime.now().isoformat(),
-            'data_fingerprint': data_fingerprint,
-            'data_count': data_count
-        }
-        manager.lru_cache.put(f"chart_{buy_currency}_{sell_currency}_{days}", cache_data)
-
-        print(f"✅ 近{days}天圖表強制重新生成完成 (數據點:{data_count})")
-
-        return jsonify({
-            'success': True,
-            'chart': chart_data['chart_url'],
-            'stats': chart_data['stats'],
-            'data_count': data_count,
-            'generated_at': datetime.now().isoformat()
-        })
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'message': f'重新生成圖表失敗: {str(e)}'
-        }), 500
-
-@app.route('/api/pregenerate_charts')
-def pregenerate_charts_api():
-    """
-    智能預生成圖表API - (Refactored)
-    此API現在作為一個觸發器，無論快取狀態如何，
-    都會啟動後端的圖表生成/通知流程。
-    """
-    buy_currency = request.args.get('buy_currency', 'TWD')
-    sell_currency = request.args.get('sell_currency', 'HKD')
-    
-    try:
-        print(f"🚀 API觸發：請求為 {buy_currency}-{sell_currency} 啟動生成/通知流程...")
-        
-        # 直接調用核心的預生成函數。
-        # 此函數內部現在有自己的邏輯來處理 SSE 通知和防止重複任務。
-        manager.pregenerate_all_charts(buy_currency, sell_currency)
-        
-        return jsonify({
-            'success': True, 
-            'message': f'已觸發 {buy_currency}-{sell_currency} 圖表預生成/通知流程。'
-        })
-        
-    except Exception as e:
-        print(f"💥 API /api/pregenerate_charts 發生錯誤: {e}")
-        return jsonify({
-            'success': False, 
-            'message': f'預生成圖表失敗: {str(e)}'
-        }), 500
-
-@app.route('/api/events')
-def sse_events():
-    """SSE事件端點"""
-    client_queue = queue.Queue()
-
-    with sse_lock:
-        sse_clients.append(client_queue)
-
-    print(f"[SSE] 新客戶端連接，目前連接數: {len(sse_clients)}")
-
-    # 發送連接成功事件
-    try:
-        client_queue.put("event: connected\ndata: {\"message\": \"SSE連接已建立\"}\n\n", timeout=1)
-    except:
-        pass
-
-    response = Response(sse_stream(client_queue), mimetype='text/event-stream')
-    response.headers['Cache-Control'] = 'no-cache'
-    response.headers['Connection'] = 'keep-alive'
-    response.headers['Access-Control-Allow-Origin'] = '*'
-    return response
-
-if __name__ == '__main__':
-    # 伺服器啟動時，清空舊的圖表文件
-    print("🧹 清理舊的圖表文件...")
-    manager._cleanup_charts_directory(manager.charts_dir, max_age_days=0)
-
-    # 啟動時強制執行180天資料更新（自動清理舊資料）
-    manager.update_data(180)  # 強制更新近180天，自動清理舊資料
-
-    # 預生成圖表緩存
-    manager.pregenerate_all_charts()
-
-    # 啟動定時任務背景執行緒
-    scheduler_thread = Thread(target=run_scheduler, daemon=True)
-    scheduler_thread.start()
-
-    app.run(threaded=True)
+            current_app.logger.error(f"❌ API LATEST (PARSE FAIL): 為 {buy_currency}-{sell_currency} 解析即時抓取數據時出錯: {e}")
+            return None 

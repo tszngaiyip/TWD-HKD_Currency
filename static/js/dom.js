@@ -249,3 +249,62 @@ export async function populateCurrencySelectors(fromCurrencyId, toCurrencyId) {
     showError('無法載入貨幣選項，請稍後重試。');
   }
 }
+
+/**
+ * 渲染圖表，包括更新圖片、統計數據和標題。
+ * @param {string} chartUrl - 圖表圖片的 URL。
+ * @param {object} stats - 包含統計數據的物件。
+ * @param {string} fromCurrency - 起始貨幣代碼。
+ * @param {string} toCurrency -目標貨幣代碼。
+ * @param {string|number} period - 圖表的數據週期。
+ */
+export function renderChart(chartUrl, stats, fromCurrency, toCurrency, period) {
+  const chartImage = document.getElementById('chartImage');
+  const chartErrorDisplay = document.getElementById('chartErrorDisplay');
+  const chartTitle = document.getElementById('chart-title');
+
+  // 隱藏載入動畫，並在完成後執行回呼
+  hideGlobalProgressBar(() => {
+    if (chartImage && chartUrl) {
+      chartImage.src = chartUrl;
+      chartImage.style.display = 'block';
+      if (chartErrorDisplay) chartErrorDisplay.style.display = 'none';
+
+      // 更新統計數據和標題
+      updateGridStats(stats);
+      if (chartTitle) {
+        chartTitle.textContent = `${fromCurrency} → ${toCurrency} (${period} 天走勢)`;
+      }
+      // 確保日期範圍也被更新
+      const dateRangeEl = document.getElementById('dateRange');
+      if(dateRangeEl && stats && stats.date_range) {
+          dateRangeEl.textContent = `數據範圍: ${stats.date_range}`;
+      }
+    }
+  });
+}
+
+/**
+ * 更新期間按鈕的啟用狀態和當前選中項。
+ * @param {string|number} activePeriod - 當前活躍的週期。
+ */
+export function updatePeriodButtons(activePeriod) {
+  const periodButtons = document.querySelectorAll('.period-btn');
+  periodButtons.forEach(btn => {
+    btn.classList.remove('active');
+    if (btn.dataset.period == activePeriod) {
+      btn.classList.add('active');
+    }
+  });
+}
+
+/**
+ * 更新圖表下方的日期範圍顯示。
+ * @param {string} dateRangeText - 要顯示的日期範圍文字。
+ */
+export function updateDateRange(dateRangeText) {
+    const drEl = document.getElementById('dateRange');
+    if (drEl && dateRangeText) {
+        drEl.textContent = `數據範圍: ${dateRangeText}`;
+    }
+}

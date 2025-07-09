@@ -9,12 +9,16 @@ import {
   showGlobalProgressBar,
   updateGlobalProgressBar,
   hideGlobalProgressBar,
-  populateCurrencySelectors
+  populateCurrencySelectors,
+  renderChart,
+  updateDateRange,
+  updatePeriodButtons
 } from './dom.js';
 
-let currentPeriod = 7;
-let eventSource = null; // SSE連接
-const chartCache = {}; // 前端圖表快取
+// 全域變數
+let currentPeriod = '7'; // 預設圖表週期
+let eventSource = null;
+let chartCache = {}; // 前端圖表短期快取
 
 // CurrencyManager 類別 - 統一管理貨幣狀態和載入控制
 class CurrencyManager {
@@ -121,20 +125,10 @@ class CurrencyManager {
       this.updateCurrencySelectors();
       updateDisplay();
 
-      // 並行執行載入操作
-      const chartPromise = this.loadChart().finally(() => {
-        this.setLoading('chart', false);
-      });
-      
-      const ratePromise = this.loadRate().finally(() => {
-        this.setLoading('rate', false);
-      });
-
-      // 獨立執行預生成（不等待完成）
-      this.triggerPregeneration(fromCurrency, toCurrency);
-
-      // 等待圖表和匯率載入完成
-      await Promise.all([chartPromise, ratePromise]);
+      // 【重構】分派載入任務，但不在此處等待或處理它們的完成
+      // 載入狀態將由 loadChart 和 loadRate 內部管理
+      this.loadChart();
+      this.loadRate();
 
       return {
         success: true,
@@ -151,35 +145,32 @@ class CurrencyManager {
     }
   }
 
-  // 載入圖表 (Refactored to be a "Viewer" with trigger)
+  // 載入圖表 (事件驅動的 "檢視器" 模式)
   async loadChart() {
-    const cacheKey = `${this.currentFromCurrency}_${this.currentToCurrency}_${currentPeriod}`;
-    
-    // 1. 檢查前端快取
+    const fromCurrency = this.currentFromCurrency;
+    const toCurrency = this.currentToCurrency;
+    const period = currentPeriod;
+    const cacheKey = `${fromCurrency}_${toCurrency}_${period}`;
+
+    // 步驟 1: 檢查前端短期快取
     if (chartCache[cacheKey]) {
-      console.log(`✅ [Viewer] 從快取渲染圖表: ${cacheKey}`);
+      console.log(`[Viewer] 從前端快取渲染圖表: ${cacheKey}`);
       const chartData = chartCache[cacheKey];
-
-      // 將渲染邏輯放入回呼函式，在進度條隱藏後執行
-      const renderCallback = () => {
-        const chartImage = document.getElementById('chartImage');
-        chartImage.src = chartData.chart_url;
-        chartImage.style.display = 'block';
-        updateStats(chartData.stats);
-        updateGridStats(chartData.stats, chartData.processing_time_ms);
-        document.getElementById('chartErrorDisplay').style.display = 'none';
-      };
-
-      hideGlobalProgressBar(renderCallback);
+      // 直接渲染，不發送任何請求
+      renderChart(chartData.chart_url, chartData.stats, fromCurrency, toCurrency, period);
+      updateDateRange(chartData.stats.date_range);
+      updatePeriodButtons(period);
+      this.setLoading('chart', false);
       return;
     }
 
-    // 2. 如果快取未命中，顯示進度條並觸發後端流程
-    console.log(`⏳ [Viewer] 圖表不在快取中: ${cacheKey}。觸發後端生成/通知...`);
-    showGlobalProgressBar('圖表請求已發送，等待後端處理...');
-    
-    // 觸發後端開始生成圖表 (或發送已有的快取圖表)
-    this.triggerPregeneration(this.currentFromCurrency, this.currentToCurrency);
+    // 步驟 2: 如果前端快取未命中，觸發後端開始工作
+    console.log(`[Viewer] 前端快取未命中: ${cacheKey}。觸發後端生成/通知...`);
+    showGlobalProgressBar(`正在為您準備 ${fromCurrency}-${toCurrency} 的圖表...`);
+    this.setLoading('chart', true); // 顯示加載動畫
+    // 只觸發，不等待，不處理回應。UI 更新將由 SSE 事件驅動
+    this.triggerPregeneration(fromCurrency, toCurrency);
+    // 注意：這裡不直接渲染，而是等待 'chart_ready' 事件
   }
 
   // 載入最新匯率
@@ -199,6 +190,9 @@ class CurrencyManager {
     } catch (error) {
       console.error('匯率載入失敗:', error);
       showRateError('匯率載入失敗，請稍後再試');
+    } finally {
+      // 【修正】無論成功或失敗，都要解除匯率載入狀態
+      this.setLoading('rate', false);
     }
   }
 
@@ -206,7 +200,12 @@ class CurrencyManager {
   triggerPregeneration(fromCurrency, toCurrency) {
     console.log(`🚀 觸發後端預生成 ${fromCurrency}-${toCurrency} 圖表...`);
     fetch(`/api/pregenerate_charts?buy_currency=${fromCurrency}&sell_currency=${toCurrency}`)
-      .then(response => response.json())
+      .then(response => {
+        if (!response.ok) {
+            throw new Error(`Server responded with status ${response.status}`);
+        }
+        return response.json();
+      })
       .then(data => {
         if (data.success) {
           if (data.skipped) {
@@ -215,11 +214,17 @@ class CurrencyManager {
             console.log(`✅ 預生成觸發成功: ${data.message}`);
           }
         } else {
+          // 如果後端回報失敗（例如，無效的貨幣）
           console.error(`❌ 預生成觸發失敗: ${data.message}`);
+          handleChartError(`圖表生成請求失敗: ${data.message}`);
+          this.setLoading('chart', false); // 解除鎖定
         }
       })
       .catch(error => {
+        // 如果發生網路錯誤
         console.error('觸發圖表預生成時發生錯誤:', error);
+        handleChartError('無法與伺服器通訊以生成圖表。');
+        this.setLoading('chart', false); // 解除鎖定
       });
   }
 
@@ -698,6 +703,11 @@ function setupSSEConnection() {
   };
 
   eventSource.onerror = function(err) {
+    // 當瀏覽器關閉或刷新頁面時，這是一個預期的行為，無需報錯
+    if (eventSource.readyState === EventSource.CLOSED) {
+      console.log("[SSE] 連線已由客戶端正常關閉。");
+      return;
+    }
     console.error("[SSE] 連接錯誤:", err);
     document.getElementById('sse-status-indicator').classList.add('disconnected');
     document.getElementById('sse-status-indicator').classList.remove('connected');
@@ -722,7 +732,6 @@ function setupSSEConnection() {
     const data = JSON.parse(event.data);
     // 檢查進度更新是否針對當前檢視的貨幣對
     if (data.buy_currency === currencyManager.currentFromCurrency && data.sell_currency === currencyManager.currentToCurrency) {
-        console.log(`[SSE] 進度: ${data.progress}% (${data.message})`);
         updateGlobalProgressBar(data.progress, data.message);
     }
   });
@@ -739,9 +748,10 @@ function setupSSEConnection() {
     chartCache[cacheKey] = chart_info;
 
     // 如果這個就緒的圖表，正是使用者當前正在查看的週期和貨幣，則立即刷新圖表
-    if (period === currentPeriod && buy_currency === currencyManager.currentFromCurrency && sell_currency === currencyManager.currentToCurrency) {
+    if (String(period) === String(currentPeriod) && buy_currency === currencyManager.currentFromCurrency && sell_currency === currencyManager.currentToCurrency) {
         console.log(`[SSE] 就緒的圖表 (${period}天) 符合當前檢視，觸發刷新...`);
-        currencyManager.loadChart();
+        // 觸發 loadChart，它將從前端快取中讀取並渲染
+        currencyManager.loadChart(); 
     }
   });
 
