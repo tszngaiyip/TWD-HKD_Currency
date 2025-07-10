@@ -365,6 +365,12 @@ function setupSSEConnection() {
       chartData.buy_currency === currencyManager.currentFromCurrency &&
       chartData.sell_currency === currencyManager.currentToCurrency
     ) {
+      // 清除超時計時器
+      if (currencyManager.chartLoadTimeout) {
+        clearTimeout(currencyManager.chartLoadTimeout);
+        currencyManager.chartLoadTimeout = null;
+      }
+
       // 隱藏全域進度條
       hideGlobalProgressBar(() => {
         // 渲染圖表
@@ -389,7 +395,12 @@ function setupSSEConnection() {
   // 監聽 'chart_error' 事件
   eventSource.addEventListener('chart_error', function(event) {
     const data = JSON.parse(event.data);
-    if (data.from_currency === currencyManager.currentFromCurrency && data.to_currency === currencyManager.currentToCurrency) {
+    if (data.buy_currency === currencyManager.currentFromCurrency && data.sell_currency === currencyManager.currentToCurrency) {
+        // 清除超時計時器
+        if (currencyManager.chartLoadTimeout) {
+            clearTimeout(currencyManager.chartLoadTimeout);
+            currencyManager.chartLoadTimeout = null;
+        }
         hideGlobalProgressBar(() => {
             handleChartError(data.message);
             currencyManager.setLoading('chart', false);

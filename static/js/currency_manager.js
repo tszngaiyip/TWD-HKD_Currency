@@ -13,6 +13,9 @@ class CurrencyManager {
         rate: false
       };
       
+      // 新增：圖表載入超時計時器
+      this.chartLoadTimeout = null;
+      
       // 儲存依賴項
       this.deps = dependencies;
       
@@ -158,12 +161,28 @@ class CurrencyManager {
         return;
       }
 
+      // 清除可能存在的舊計時器
+      if (this.chartLoadTimeout) {
+        clearTimeout(this.chartLoadTimeout);
+      }
+
       // 步驟 2: 如果前端快取未命中，觸發後端開始工作
       
       if (this.deps.showGlobalProgressBar) {
         this.deps.showGlobalProgressBar(`正在為您準備 ${fromCurrency}-${toCurrency} 的圖表...`);
       }
       this.setLoading('chart', true); // 顯示加載動畫
+
+      // 設定載入超時 (例如 30 秒)
+      this.chartLoadTimeout = setTimeout(() => {
+        console.error(`圖表請求超時: ${fromCurrency}-${toCurrency}`);
+        if (this.isChartLoading()) { // 僅在仍在載入時觸發
+          this.deps.handleChartError(`為 ${fromCurrency}-${toCurrency} 生成圖表時發生超時。`);
+          this.deps.hideGlobalProgressBar();
+          this.setLoading('chart', false);
+        }
+      }, 30000); // 30 秒超時
+
       // 只觸發，不等待，不處理回應。UI 更新將由 SSE 事件驅動
       this.deps.triggerPregeneration(fromCurrency, toCurrency);
       // 注意：這裡不直接渲染，而是等待 'chart_ready' 事件
