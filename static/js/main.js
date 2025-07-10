@@ -1,5 +1,4 @@
 import { fetchChart, loadLatestRate, triggerPregeneration } from './api.js';
-import { handleChartError } from './chart.js';
 import { 
   displayLatestRate, 
   showRateError, 
@@ -12,7 +11,8 @@ import {
   populateCurrencySelectors,
   renderChart,
   updateDateRange,
-  updatePeriodButtons
+  updatePeriodButtons,
+  handleChartError
 } from './dom.js';
 import { CurrencyManager } from './currency_manager.js';
 
@@ -36,7 +36,8 @@ const currencyManager = new CurrencyManager({
   showRateError,
   updateCurrencyDisplay,
   loadLatestRate,
-  handleChartError
+  handleChartError,
+  triggerPregeneration
 });
 
 // 頁面載入時自動載入圖表和最新匯率
@@ -249,75 +250,71 @@ function setupCurrencyCombobox(selectId) {
     if (isSearchMode) {
       filteredOptions = filterOptions(input.value);
       createDropdownItems(filteredOptions);
+      highlightItem(0);
     }
   });
 
-  input.addEventListener('keydown', (e) => {
-    const items = Array.from(dropdown.querySelectorAll('div'));
-    const highlighted = dropdown.querySelector('.highlighted');
-    let currentIndex = items.indexOf(highlighted);
-
-    switch (e.key) {
-      case 'ArrowDown':
-        e.preventDefault();
-        if (currentIndex < items.length - 1) {
-          highlightItem(currentIndex + 1);
-        }
-        break;
-      case 'ArrowUp':
-        e.preventDefault();
-        if (currentIndex > 0) {
-          highlightItem(currentIndex - 1);
-        }
-        break;
-      case 'Enter':
-        e.preventDefault();
-        if (highlighted) {
-          selectOption(highlighted.dataset.value);
-        }
-        break;
-      case 'Escape':
-        exitSearchMode();
-        input.blur(); // 失去焦點
-        break;
-    }
-  });
-
-  input.addEventListener('click', () => {
-    if (dropdown.classList.contains('open')) {
+  document.addEventListener('click', (e) => {
+    if (!wrapper.contains(e.target)) {
       hideDropdown();
-    } else {
-      // 關閉其他所有已開啟的下拉選單
-      document.querySelectorAll('.currency-dropdown.open').forEach(d => {
-        // 觸發一個全局點擊來正確關閉它們
-        document.body.click();
-      });
+    }
+  });
+
+  wrapper.addEventListener('click', (e) => {
+    if (e.target.classList.contains('currency-input')) {
       enterSearchMode();
     }
   });
 
-  wrapper.querySelector('.currency-dropdown-arrow').addEventListener('click', (e) => {
-    e.stopPropagation();
-    input.click();
+  input.addEventListener('keydown', (e) => {
+    if (!isSearchMode) {
+        if (e.key === ' ' || e.key === 'Enter') {
+            e.preventDefault();
+            enterSearchMode();
+        }
+        return;
+    }
+    
+    switch(e.key) {
+      case 'ArrowDown':
+        e.preventDefault();
+        highlightItem(Math.min(highlightedIndex + 1, filteredOptions.length - 1));
+        break;
+      case 'ArrowUp':
+        e.preventDefault();
+        highlightItem(Math.max(highlightedIndex - 1, 0));
+        break;
+      case 'Enter':
+        e.preventDefault();
+        const highlightedItemEl = dropdown.querySelector('.highlighted');
+        if (highlightedItemEl) {
+          selectOption(highlightedItemEl.dataset.value);
+        } else if (filteredOptions.length > 0) {
+          selectOption(filteredOptions[0].value);
+        }
+        break;
+      case 'Escape':
+        hideDropdown();
+        break;
+    }
   });
-
-  // 新增：初始化時更新顯示
-  allOptions = getAllOptions();
-  updateInputDisplay();
 }
 
-// 更新貨幣顯示（統一函數名）
+// 更新單個貨幣選擇器的顯示（當 CurrencyManager 狀態改變時）
 function updateCurrencyDisplay(selectId) {
-  const input = document.getElementById(selectId + '-input');
-  const select = document.getElementById(selectId);
-  const selectedOption = select.options[select.selectedIndex];
-
-  if (selectedOption && input) {
-    input.value = selectedOption.textContent;
-    input.setAttribute('readonly', 'readonly');
-    input.placeholder = '點擊選擇或輸入搜索貨幣...';
-  }
+    const wrapper = document.querySelector(`#${selectId}`).parentElement;
+    const input = wrapper.querySelector('.currency-input');
+    const select = wrapper.querySelector('select');
+    
+    const value = selectId === 'from-currency' ? currencyManager.currentFromCurrency : currencyManager.currentToCurrency;
+    const option = Array.from(select.options).find(opt => opt.value === value);
+    
+    if (option) {
+        input.value = option.textContent;
+        select.value = value;
+    }
 }
+
 
 // 更新顯示內容
 function updateDisplay() {
@@ -327,78 +324,38 @@ function updateDisplay() {
     rateHeader.textContent = `💰 最新匯率 (${currencyManager.currentFromCurrency} ⇒ ${currencyManager.currentToCurrency})`;
   }
 
-  // 載入新選擇的圖表（注意：圖表載入會由 CurrencyManager 控制載入狀態）
-  currencyManager.loadChart();
-}
+  // 更新頁面標題
+  document.title = `${currencyManager.currentFromCurrency} to ${currencyManager.currentToCurrency} Exchange Rate`;
 
-// 期間按鈕點擊事件
-document.querySelectorAll('.period-btn').forEach(btn => {
-  btn.addEventListener('click', function () {
-    if (this.disabled) return;
-
-    document.querySelectorAll('.period-btn').forEach(b => b.classList.remove('active'));
-    this.classList.add('active');
-
-    currentPeriod = parseInt(this.dataset.period);
-    currencyManager.loadChart();
-  });
-});
-
-function showError(message) {
-  const errorDiv = document.getElementById('error');
-  errorDiv.textContent = message;
-  errorDiv.style.display = 'block';
-  setTimeout(() => {
-    errorDiv.style.display = 'none';
-  }, 5000);
+  // 更新主要標題
+  const mainTitle = document.getElementById('main-title');
+  if (mainTitle) {
+    mainTitle.textContent = `${currencyManager.currentFromCurrency} → ${currencyManager.currentToCurrency} 匯率走勢`;
+  }
 }
 
 function checkDataStatus() {
-
   fetch('/api/data_status')
     .then(response => response.json())
     .then(data => {
-      const statusContent = `
-                <div style="text-align: left;">
-                    <div style="text-align: center; margin-bottom: 20px;">
-                        <div style="font-size: 3rem; margin-bottom: 10px;">📊</div>
-                        <h4 style="color: #2E86AB; margin: 0;">數據庫狀態報告</h4>
-                    </div>
-
-                    <div style="background: #f8f9fa; padding: 15px; border-radius: 8px; margin-bottom: 15px;">
-                        <p style="margin: 8px 0;"><strong>📈 總記錄數：</strong><span style="color: #28a745; font-weight: bold;">${data.total_records} 筆</span></p>
-                        <p style="margin: 8px 0;"><strong>📅 最早日期：</strong>${data.earliest_date || '無數據'}</p>
-                        <p style="margin: 8px 0;"><strong>🗓️ 最新日期：：</strong>${data.latest_date || '無數據'}</p>
-                    </div>
-
-                    <div style="background: #e3f2fd; padding: 15px; border-radius: 8px; border-left: 4px solid #2E86AB;">
-                        <p style="margin: 8px 0;"><strong>⏰ 檢查時間：</strong></p>
-                        <p style="margin: 8px 0; font-family: monospace; color: #666;">${new Date(data.last_updated).toLocaleString('zh-TW')}</p>
-                    </div>
-
-                    ${data.total_records > 0 ? `
-                    <div style="margin-top: 15px; text-align: center; color: #666; font-size: 0.9rem;">
-                        數據涵蓋期間：${Math.round((new Date(data.latest_date) - new Date(data.earliest_date)) / (1000 * 60 * 60 * 24))} 天
-                    </div>
-                    ` : ''}
-                </div>
-            `;
-      showPopup('📊 數據狀態', statusContent);
+      const statusContent = Object.entries(data).map(([file, info]) => {
+        const statusIcon = info.exists ? (info.is_recent ? '✅' : '⚠️') : '❌';
+        const recentText = info.exists ? (info.is_recent ? ' (最新)' : ' (過舊)') : '';
+        const dateText = info.last_modified ? ` - ${info.last_modified}` : '';
+        return `<li>${statusIcon} ${file}${recentText}${dateText}</li>`;
+      }).join('');
+      showPopup('📊 數據狀態', `<ul>${statusContent}</ul>`);
     })
     .catch(error => {
+      console.error('獲取數據狀態失敗:', error);
       const errorContent = `
-                <div style="text-align: center;">
-                    <div style="font-size: 3rem; margin-bottom: 15px;">❌</div>
-                    <h4 style="color: #dc3545; margin-bottom: 15px;">檢查失敗</h4>
-                    <p><strong>錯誤信息：</strong>${error.message}</p>
-                    <p style="color: #666; font-size: 0.9rem; margin-top: 15px;">無法連接到數據庫服務</p>
-                </div>
-            `;
+        <p>無法獲取數據狀態。請檢查您的網路連線或稍後再試。</p>
+        <p><strong>錯誤詳情:</strong> ${error.message}</p>
+      `;
       showPopup('📊 數據狀態', errorContent);
     });
 }
 
-// SSE 相關函數
 function setupSSEConnection() {
   if (eventSource) {
     eventSource.close();
@@ -406,134 +363,96 @@ function setupSSEConnection() {
 
   eventSource = new EventSource('/api/events');
 
-  eventSource.onopen = function() {
-    
-    document.getElementById('sse-status-indicator').classList.add('connected');
-    document.getElementById('sse-status-indicator').classList.remove('disconnected');
-    document.getElementById('sse-status-indicator').title = 'SSE 已連接';
-  };
-
-  eventSource.onerror = function(err) {
-    // 當瀏覽器關閉或刷新頁面時，這是一個預期的行為，無需報錯
-    if (eventSource.readyState === EventSource.CLOSED) {
-      
-      return;
-    }
-    console.error("[SSE] 連接錯誤:", err);
-    document.getElementById('sse-status-indicator').classList.add('disconnected');
-    document.getElementById('sse-status-indicator').classList.remove('connected');
-    document.getElementById('sse-status-indicator').title = 'SSE 已斷開';
-    // 可以在這裡添加重連邏輯
-  };
-
-  // 監聽後端發送的通用訊息
-  eventSource.addEventListener('message', function(event) {
-    
-  });
-
-  // 監聽匯率更新事件
-  eventSource.addEventListener('rate_updated', function(event) {
-    const updateData = JSON.parse(event.data);
-    
-    autoRefreshContent(updateData);
-  });
-  
-  // 【新】監聽後端進度更新
-  eventSource.addEventListener('progress_update', (event) => {
+  // 新增：正確監聽 'progress_update' 命名事件
+  eventSource.addEventListener('progress_update', function(event) {
     const data = JSON.parse(event.data);
-    // 檢查進度更新是否針對當前檢視的貨幣對
+    // 確保進度條只為當前查看的貨幣對更新
     if (data.buy_currency === currencyManager.currentFromCurrency && data.sell_currency === currencyManager.currentToCurrency) {
         updateGlobalProgressBar(data.progress, data.message);
     }
   });
-
-  // 【新】監聽圖表就緒事件
-  eventSource.addEventListener('chart_ready', (event) => {
+  
+  // 監聽 'chart_ready' 事件
+  eventSource.addEventListener('chart_ready', function(event) {
     const data = JSON.parse(event.data);
-    const { period, chart_info, buy_currency, sell_currency } = data;
     
-    
+    // 將所有收到的、屬於當前貨幣對的圖表數據都存入快取
+    if (data.from_currency === currencyManager.currentFromCurrency && data.to_currency === currencyManager.currentToCurrency) {
+        const cacheKey = `${data.from_currency}_${data.to_currency}_${data.period}`;
+        chartCache[cacheKey] = data;
 
-    // 將收到的圖表資訊存入前端快取
-    const cacheKey = `${buy_currency}_${sell_currency}_${period}`;
-    chartCache[cacheKey] = chart_info;
-
-    // 如果這個就緒的圖表，正是使用者當前正在查看的週期和貨幣，則立即刷新圖表
-    if (String(period) === String(currentPeriod) && buy_currency === currencyManager.currentFromCurrency && sell_currency === currencyManager.currentToCurrency) {
-        
-        // 觸發 loadChart，它將從前端快取中讀取並渲染
-        currencyManager.loadChart(); 
+        // 只有當收到的圖表週期與當前選定的週期相符時，才立即渲染
+        if (String(data.period) === String(currentPeriod)) {
+            hideGlobalProgressBar(() => {
+                renderChart(data.chart_url, data.stats, data.from_currency, data.to_currency, data.period);
+                updateDateRange(data.stats.date_range);
+                updatePeriodButtons(data.period);
+                currencyManager.setLoading('chart', false);
+            });
+        }
+    }
+  });
+  
+  // 監聽 'chart_error' 事件
+  eventSource.addEventListener('chart_error', function(event) {
+    const data = JSON.parse(event.data);
+    if (data.from_currency === currencyManager.currentFromCurrency && data.to_currency === currencyManager.currentToCurrency) {
+        hideGlobalProgressBar(() => {
+            handleChartError(data.message);
+            currencyManager.setLoading('chart', false);
+        });
     }
   });
 
-  eventSource.addEventListener('heartbeat', function(event) {
-    // console.log("[SSE] 收到心跳包");
-  });
+  eventSource.onerror = function () {
+    eventSource.close();
+  };
 }
 
-/**
- * 自動刷新頁面內容
- */
-function autoRefreshContent(updateData) {
+// 自動刷新頁面內容
+async function autoRefreshContent(updateData) {
+  const { from, to } = updateData;
   
-
-  // 顯示自動更新提示
-  showAutoUpdateNotification(updateData);
-
-  // 自動刷新圖表與匯率
-  currencyManager.loadChart();
-  currencyManager.loadRate();
+  // 只有當用戶正在查看的貨幣對更新時，才刷新
+  if (from === currencyManager.currentFromCurrency && to === currencyManager.currentToCurrency) {
+    // 顯示一個短暫的通知
+    showAutoUpdateNotification(updateData);
+    
+    // 重新載入最新匯率和圖表
+    // 這裡我們假設用戶希望看到最新的數據，所以強制重新載入
+    await currencyManager.loadRate();
+    await currencyManager.loadChart(true); // `force` 參數為 true
+  }
 }
 
+// 顯示自動更新通知
 function showAutoUpdateNotification(updateData) {
-  const notification = document.getElementById('auto-update-notification');
-  const messageElement = notification.querySelector('.notification-message');
+  const notification = document.createElement('div');
+  notification.className = 'auto-update-notification';
+  
+  const icon = '🔄';
+  const message = `偵測到 ${updateData.from}-${updateData.to} 數據已更新，頁面已自動刷新。`;
 
-  messageElement.innerHTML = `
-        <strong>數據已自動更新！</strong><br>
-        ${updateData.message}<br>
-        最新匯率 (1 HKD): <strong>${updateData.rate.toFixed(4)} TWD</strong>
-    `;
-
-  notification.classList.add('show');
-
-  // 3秒後開始淡出
+  notification.innerHTML = `${icon} ${message}`;
+  
+  document.body.appendChild(notification);
+  
+  // 觸發顯示動畫
+  setTimeout(() => {
+    notification.classList.add('show');
+  }, 10);
+  
+  // 5秒後自動隱藏
   setTimeout(() => {
     notification.classList.remove('show');
+    // 動畫結束後從DOM中移除
+    setTimeout(() => {
+      notification.remove();
+    }, 500);
   }, 5000);
 }
 
-// 添加CSS動畫樣式
-if (!document.getElementById('auto-update-styles')) {
-  const style = document.createElement('style');
-  style.id = 'auto-update-styles';
-  style.textContent = `
-        @keyframes slideInRight {
-            from {
-                transform: translateX(100%);
-                opacity: 0;
-            }
-            to {
-                transform: translateX(0);
-                opacity: 1;
-            }
-        }
 
-        @keyframes slideOutRight {
-            from {
-                transform: translateX(0);
-                opacity: 1;
-            }
-            to {
-                transform: translateX(100%);
-                opacity: 0;
-            }
-        }
-    `;
-  document.head.appendChild(style);
-}
-
-// 設定確認按鈕事件
 function setupConfirmButton() {
   const confirmBtn = document.getElementById('confirm-currency-btn');
   if (confirmBtn) {
@@ -543,30 +462,36 @@ function setupConfirmButton() {
   }
 }
 
-// 設定其他事件監聽器
 function setupEventListeners() {
-  // 數據狀態按鈕
-  const dataStatusBtn = document.getElementById('data-status-btn');
-  if (dataStatusBtn) {
-    dataStatusBtn.addEventListener('click', checkDataStatus);
-  }
-
-  // 彈出視窗關閉事件
-  const popupOverlay = document.getElementById('popup-overlay');
-  const popupCloseBtn = document.getElementById('popup-close-btn');
-  const popupContent = document.querySelector('.popup-content');
-
-  if (popupOverlay) {
-    popupOverlay.addEventListener('click', closePopup);
-  }
-
-  if (popupCloseBtn) {
-    popupCloseBtn.addEventListener('click', closePopup);
-  }
-
-  if (popupContent) {
-    popupContent.addEventListener('click', (event) => {
-      event.stopPropagation();
+  // 圖表週期按鈕
+  document.querySelectorAll('.period-btn').forEach(btn => {
+    btn.addEventListener('click', async (event) => {
+      currentPeriod = event.target.dataset.period;
+      // 更新按鈕狀態
+      updatePeriodButtons(currentPeriod);
+      // 重新載入圖表
+      await currencyManager.loadChart();
     });
+  });
+
+  // 數據狀態按鈕
+  const statusBtn = document.getElementById('status-btn');
+  if (statusBtn) {
+    statusBtn.addEventListener('click', checkDataStatus);
+  }
+
+  // 關閉彈出視窗
+  const closeBtn = document.getElementById('popup-close-btn');
+  if (closeBtn) {
+    closeBtn.addEventListener('click', closePopup);
+  }
+  
+  const popupOverlay = document.getElementById('popup-overlay');
+  if (popupOverlay) {
+      popupOverlay.addEventListener('click', (e) => {
+          if (e.target === popupOverlay) {
+              closePopup();
+          }
+      });
   }
 }

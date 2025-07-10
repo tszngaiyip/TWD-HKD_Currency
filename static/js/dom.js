@@ -214,7 +214,7 @@ export function hideGlobalProgressBar(callback) {
  */
 export async function populateCurrencySelectors(fromCurrencyId, toCurrencyId) {
   try {
-    const response = await fetch('/static/currencies.json');
+    const response = await fetch('/static/currency_list.json');
     if (!response.ok) {
       throw new Error(`無法載入貨幣列表：${response.statusText}`);
     }
@@ -249,13 +249,21 @@ export async function populateCurrencySelectors(fromCurrencyId, toCurrencyId) {
   }
 }
 
+// 處理圖表載入錯誤
+export function handleChartError(message) {
+  const chartContainer = document.getElementById('chart-container');
+  if (chartContainer) {
+    chartContainer.innerHTML = `<p class="error">${message}</p>`;
+  }
+}
+
 /**
- * 渲染圖表，包括更新圖片、統計數據和標題。
- * @param {string} chartUrl - 圖表圖片的 URL。
- * @param {object} stats - 包含統計數據的物件。
- * @param {string} fromCurrency - 起始貨幣代碼。
- * @param {string} toCurrency -目標貨幣代碼。
- * @param {string|number} period - 圖表的數據週期。
+ * Renders the chart image and updates the associated statistics.
+ * @param {string} chartUrl - The URL of the chart image.
+ * @param {object} stats - The object containing statistics.
+ * @param {string} fromCurrency - The starting currency code.
+ * @param {string} toCurrency - The target currency code.
+ * @param {string|number} period - The data period for the chart.
  */
 export function renderChart(chartUrl, stats, fromCurrency, toCurrency, period) {
   const chartImage = document.getElementById('chartImage');

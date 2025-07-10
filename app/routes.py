@@ -202,47 +202,6 @@ def force_cleanup_data():
             'message': f'強制清理資料失敗: {str(e)}'
         }), 500
 
-@bp.route('/api/regenerate_chart')
-def regenerate_chart():
-    """強制重新生成圖表API"""
-    try:
-        period = request.args.get('period', '7')
-        buy_currency = request.args.get('buy_currency', 'TWD')
-        sell_currency = request.args.get('sell_currency', 'HKD')
-
-        try:
-            days = int(period)
-            if days not in [7, 30, 90, 180]:
-                days = 7
-        except ValueError:
-            days = 7
-
-        print(f"🔄 強制重新生成 {buy_currency}->{sell_currency} 近{days}天圖表...")
-        chart_data = current_app.manager.create_chart(days, buy_currency, sell_currency)
-
-        if chart_data is None:
-            return jsonify({
-                'success': False,
-                'message': '無法生成圖表，請檢查數據'
-            }), 400
-
-        data_count = chart_data.get('stats', {}).get('data_points', 0)
-
-        print(f"✅ 近{days}天圖表強制重新生成完成 (數據點:{data_count})")
-
-        return jsonify({
-            'success': True,
-            'chart': chart_data['chart_url'],
-            'stats': chart_data['stats'],
-            'data_count': data_count,
-            'generated_at': datetime.now().isoformat()
-        })
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'message': f'重新生成圖表失敗: {str(e)}'
-        }), 500
-
 @bp.route('/api/pregenerate_charts')
 def pregenerate_charts_api():
     """智能預生成圖表API"""

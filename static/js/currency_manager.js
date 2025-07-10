@@ -160,7 +160,7 @@ class CurrencyManager {
       }
       this.setLoading('chart', true); // 顯示加載動畫
       // 只觸發，不等待，不處理回應。UI 更新將由 SSE 事件驅動
-      this.triggerPregeneration(fromCurrency, toCurrency);
+      this.deps.triggerPregeneration(fromCurrency, toCurrency);
       // 注意：這裡不直接渲染，而是等待 'chart_ready' 事件
     }
   
@@ -193,42 +193,6 @@ class CurrencyManager {
         // 【修正】無論成功或失敗，都要解除匯率載入狀態
         this.setLoading('rate', false);
       }
-    }
-  
-    // 觸發預生成（獨立執行，不阻塞）
-    triggerPregeneration(fromCurrency, toCurrency) {
-      
-      fetch(`/api/pregenerate_charts?buy_currency=${fromCurrency}&sell_currency=${toCurrency}`)
-        .then(response => {
-          if (!response.ok) {
-              throw new Error(`Server responded with status ${response.status}`);
-          }
-          return response.json();
-        })
-        .then(data => {
-          if (data.success) {
-            if (data.skipped) {
-              
-            } else {
-              
-            }
-          } else {
-            // 如果後端回報失敗（例如，無效的貨幣）
-            console.error(`❌ 預生成觸發失敗: ${data.message}`);
-            if (this.deps.handleChartError) {
-              this.deps.handleChartError(`圖表生成請求失敗: ${data.message}`);
-            }
-            this.setLoading('chart', false); // 解除鎖定
-          }
-        })
-        .catch(error => {
-          // 如果發生網路錯誤
-          console.error('觸發圖表預生成時發生錯誤:', error);
-          if (this.deps.handleChartError) {
-            this.deps.handleChartError('無法與伺服器通訊以生成圖表。');
-          }
-          this.setLoading('chart', false); // 解除鎖定
-        });
     }
   
     // 交換貨幣

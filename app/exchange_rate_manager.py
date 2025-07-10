@@ -251,82 +251,6 @@ class ExchangeRateManager:
 
         return date_str, None
 
-    def get_live_rates_for_period(self, days, buy_currency='TWD', sell_currency='HKD', max_workers=5):
-        """獲取指定期間的即時匯率數據（並行查詢版本，並在過程中漸進式生成圖表）"""
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=days)
-
-        # 收集所有需要查詢的日期（跳過週末），從最新日期開始
-        query_dates = []
-        current_date = end_date
-
-        while current_date >= start_date:
-            # 跳過週末（Saturday=5, Sunday=6）
-            if current_date.weekday() < 5:
-                query_dates.append(current_date)
-            current_date -= timedelta(days=1)
-
-        # query_dates 現在是從新到舊的順序，這有助於優先處理最新數據
-        actual_workers = min(max_workers, len(query_dates))
-
-        rates_data = {}
-        successful_queries = 0
-        failed_queries = 0
-        
-        # 用於追蹤已生成的圖表，避免重複生成
-        generated_periods = set()
-        # 定義生成圖表所需的數據點數量門檻 (約略的工作日天數)
-        WORK_DAYS_APPROX = {7: 5, 30: 21, 90: 65, 180: 129}
-
-        print(f"🚀 開始並行查詢 {len(query_dates)} 個日期（優先最新數據）...")
-
-        # 使用線程池進行並行查詢
-        with ThreadPoolExecutor(max_workers=actual_workers) as executor:
-            # 提交所有查詢任務，優先提交最新日期
-            future_to_date = {
-                executor.submit(self._fetch_single_rate, date, buy_currency, sell_currency): date
-                for date in query_dates
-            }
-
-            # 收集結果，並在獲得足夠數據時立即生成圖表
-            for future in as_completed(future_to_date):
-                try:
-                    date_str, rate = future.result(timeout=30)  # 30秒超時
-                    if rate is not None:
-                        rates_data[date_str] = rate
-                        successful_queries += 1
-                        
-                        # 檢查是否達到生成各週期圖表的門檻
-                        for period, required_points in WORK_DAYS_APPROX.items():
-                            if period not in generated_periods and successful_queries >= required_points:
-                                print(f"⚡ 已獲得 {successful_queries} 筆數據，嘗試生成 {period} 天即時圖表...")
-                                try:
-                                    # 調用 build_chart_with_cache，傳遞已獲取的數據
-                                    chart_info = self.build_chart_with_cache(period, buy_currency, sell_currency, live_rates_data=rates_data)
-                                    if chart_info:
-                                        print(f"✅ {period} 天即時圖表已優先生成並快取")
-                                        generated_periods.add(period)
-                                except Exception as e:
-                                    print(f"⚠️ 生成 {period} 天即時圖表時發生錯誤: {e}")
-                    else:
-                        failed_queries += 1
-                        
-                except concurrent.futures.TimeoutError:
-                    date = future_to_date[future]
-                    print(f"⏰ {date.strftime('%Y-%m-%d')}: 查詢超時")
-                    failed_queries += 1
-                except Exception as e:
-                    date = future_to_date[future]
-                    print(f"❌ {date.strftime('%Y-%m-%d')}: 並行查詢錯誤 - {e}")
-                    failed_queries += 1
-
-        print(f"📈 並行查詢完成！成功: {successful_queries}, 失敗: {failed_queries}")
-
-        if not rates_data:
-            print("⚠️ 沒有獲取到任何有效的匯率數據")
-
-        return rates_data
-
     def extract_local_rates(self, days):
         """獲取指定天數的匯率數據"""
         end_date = datetime.now()
@@ -397,7 +321,14 @@ class ExchangeRateManager:
                                     if chart_info:
                                         print(f"✅ 背景任務：成功生成並快取了 {period} 天圖表。")
                                         generated_periods.add(period)
-                                        send_sse_event('chart_ready', {'period': period, 'chart_info': chart_info, 'buy_currency': buy_currency, 'sell_currency': sell_currency})
+                                        # 修正：傳送前端期望的扁平化資料結構
+                                        send_sse_event('chart_ready', {
+                                            'from_currency': buy_currency,
+                                            'to_currency': sell_currency,
+                                            'period': period,
+                                            'chart_url': chart_info['chart_url'],
+                                            'stats': chart_info['stats']
+                                        })
 
                 # 5. 最終補全
                 final_periods_to_generate = set(chart_generation_checkpoints.keys()) - generated_periods
@@ -407,8 +338,14 @@ class ExchangeRateManager:
                         chart_info = self.build_chart_with_cache(period, buy_currency, sell_currency, live_rates_data=rates_data)
                         if chart_info:
                             generated_periods.add(period)
-                            # 即使是補全，也要通知前端
-                            send_sse_event('chart_ready', {'period': period, 'chart_info': chart_info, 'buy_currency': buy_currency, 'sell_currency': sell_currency})
+                            # 修正：傳送前端期望的扁平化資料結構
+                            send_sse_event('chart_ready', {
+                                'from_currency': buy_currency,
+                                'to_currency': sell_currency,
+                                'period': period,
+                                'chart_url': chart_info['chart_url'],
+                                'stats': chart_info['stats']
+                            })
 
                 # 6. 最終日誌
                 if len(generated_periods) == 4:
@@ -685,54 +622,58 @@ class ExchangeRateManager:
         return f"/static/{relative_path.replace(os.path.sep, '/')}"
 
     def warm_up_chart_cache(self, buy_currency='TWD', sell_currency='HKD'):
-        """預生成所有期間的圖表，對外部 API 自動採用漸進式生成"""
-        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 觸發 {buy_currency}-{sell_currency} 圖表預生成...")
+        """
+        為常用週期預熱圖表快取。
+        此函數只提交任務，不阻塞。
+        會根據貨幣對類型選擇不同的執行策略。
+        """
+        flask_app = current_app._get_current_object()
 
+        # 策略一：對於 TWD-HKD，我們有本地數據，可以直接生成圖表並通知
         if buy_currency == 'TWD' and sell_currency == 'HKD':
-            periods = [7, 30, 90, 180]
-            app = current_app._get_current_object() # 獲取當前的應用實例
+            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 觸發 {buy_currency}-{sell_currency} 圖表直接生成...")
 
-            # 為 TWD-HKD 創建一個包含通知的生成器
-            def generate_and_notify(manager_instance, period, flask_app):
-                with flask_app.app_context():
-                    try:
-                        # 1. 生成圖表
-                        chart_info = manager_instance.build_chart_with_cache(period, buy_currency, sell_currency)
-                        
-                        if chart_info and chart_info.get('chart_url'):
-                            print(f"  ✅ 預生成 {buy_currency}-{sell_currency} {period} 天圖表成功")
-                            # 2. 發送 SSE 通知事件
+            for period in [7, 30, 90, 180]:
+                def generate_and_notify(manager_instance, period, app_context):
+                    with app_context.app_context():
+                        try:
+                            chart_info = manager_instance.create_chart(period, buy_currency, sell_currency)
+                            if not chart_info or not chart_info.get('chart_url'):
+                                raise ValueError("圖表生成返回了無效的數據")
+                            
+                            # 修正：傳送前端期望的扁平化資料結構
                             send_sse_event('chart_ready', {
+                                'message': f'圖表 {buy_currency}-{sell_currency} ({period}d) 已生成',
+                                'from_currency': buy_currency,
+                                'to_currency': sell_currency,
                                 'period': period,
-                                'chart_info': chart_info,
-                                'buy_currency': buy_currency,
-                                'sell_currency': sell_currency
+                                'chart_url': chart_info['chart_url'],
+                                'stats': chart_info['stats']
                             })
-                        else:
-                            print(f"  ❌ 預生成 {buy_currency}-{sell_currency} {period} 天圖表失敗")
-                    except Exception as e:
-                        print(f"  ❌ 預生成 {buy_currency}-{sell_currency} {period} 天圖表時發生錯誤: {e}")
+                        except Exception as e:
+                            error_message = f"背景任務中為 {buy_currency}-{sell_currency} ({period}d) 生成圖表時出錯: {e}"
+                            print(f"❌ {error_message}")
+                            send_sse_event('chart_error', {
+                                'message': error_message, 'from_currency': buy_currency,
+                                'to_currency': sell_currency, 'period': period
+                            })
+                
+                self.background_executor.submit(generate_and_notify, self, period, flask_app)
 
-            # 使用線程池並行執行，包含通知
-            with ThreadPoolExecutor(max_workers=4) as executor:
-                for period in periods:
-                    executor.submit(generate_and_notify, self, period, app)
+        # 策略二：對於其他貨幣對，我們需要先抓取數據，然後再生成圖表
         else:
-            # 對於其他貨幣對，啟動背景抓取任務，並傳遞 app context
             with self._active_fetch_lock:
                 if (buy_currency, sell_currency) not in self._active_fetches:
-                    print(f"🌀 預生成: {buy_currency}-{sell_currency} 的背景抓取尚未啟動，現在開始...")
+                    print(f"🌀 {buy_currency}-{sell_currency} 的背景抓取任務已啟動...")
                     self._active_fetches.add((buy_currency, sell_currency))
-                    app = current_app._get_current_object() # 獲取 app 實例
-                    self.background_executor.submit(self._background_fetch_and_generate, buy_currency, sell_currency, app)
+                    # 提交的是 _background_fetch_and_generate 任務，並傳遞 flask_app
+                    self.background_executor.submit(self._background_fetch_and_generate, buy_currency, sell_currency, flask_app)
                 else:
-                    print(f"✅ 預生成: {buy_currency}-{sell_currency} 的背景抓取已在進行中。")
-
-        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {buy_currency}-{sell_currency} 圖表預生成任務已觸發。")
+                    print(f"✅ {buy_currency}-{sell_currency} 的背景抓取已在進行中，無需重複啟動。")
 
     @staticmethod
     def _cleanup_charts_directory(directory, max_age_days=1):
-        """清理圖表目錄中的過期文件"""
+        """清理超過指定天數的舊圖表檔案"""
         try:
             current_time = time.time()
             for filename in os.listdir(directory):

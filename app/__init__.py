@@ -2,8 +2,12 @@ from flask import Flask
 import os
 import matplotlib
 import matplotlib.font_manager as fm
-from .services import ExchangeRateManager
+from .exchange_rate_manager import ExchangeRateManager
 from .scheduler import init_scheduler
+
+class Config:
+    """應用程式設定"""
+    SECRET_KEY = os.environ.get('SECRET_KEY', 'dev')
 
 def create_app():
     # 設定非 GUI 後端
@@ -11,6 +15,9 @@ def create_app():
 
     app = Flask(__name__, static_folder='../static', template_folder='../templates')
     
+    # 從物件設定 Flask 應用程式
+    app.config.from_object(Config)
+
     # 建立服務實例並附加到 app
     app.manager = ExchangeRateManager()
 
