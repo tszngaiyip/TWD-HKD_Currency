@@ -323,8 +323,8 @@ class ExchangeRateManager:
                                         generated_periods.add(period)
                                         # 修正：傳送前端期望的扁平化資料結構
                                         send_sse_event('chart_ready', {
-                                            'from_currency': buy_currency,
-                                            'to_currency': sell_currency,
+                                            'buy_currency': buy_currency,
+                                            'sell_currency': sell_currency,
                                             'period': period,
                                             'chart_url': chart_info['chart_url'],
                                             'stats': chart_info['stats']
@@ -340,8 +340,8 @@ class ExchangeRateManager:
                             generated_periods.add(period)
                             # 修正：傳送前端期望的扁平化資料結構
                             send_sse_event('chart_ready', {
-                                'from_currency': buy_currency,
-                                'to_currency': sell_currency,
+                                'buy_currency': buy_currency,
+                                'sell_currency': sell_currency,
                                 'period': period,
                                 'chart_url': chart_info['chart_url'],
                                 'stats': chart_info['stats']
@@ -644,8 +644,8 @@ class ExchangeRateManager:
                             # 修正：傳送前端期望的扁平化資料結構
                             send_sse_event('chart_ready', {
                                 'message': f'圖表 {buy_currency}-{sell_currency} ({period}d) 已生成',
-                                'from_currency': buy_currency,
-                                'to_currency': sell_currency,
+                                'buy_currency': buy_currency,
+                                'sell_currency': sell_currency,
                                 'period': period,
                                 'chart_url': chart_info['chart_url'],
                                 'stats': chart_info['stats']
@@ -654,8 +654,8 @@ class ExchangeRateManager:
                             error_message = f"背景任務中為 {buy_currency}-{sell_currency} ({period}d) 生成圖表時出錯: {e}"
                             print(f"❌ {error_message}")
                             send_sse_event('chart_error', {
-                                'message': error_message, 'from_currency': buy_currency,
-                                'to_currency': sell_currency, 'period': period
+                                'message': error_message, 'buy_currency': buy_currency,
+                                'sell_currency': sell_currency, 'period': period
                             })
                 
                 self.background_executor.submit(generate_and_notify, self, period, flask_app)
@@ -796,3 +796,29 @@ class ExchangeRateManager:
         except (KeyError, ValueError, TypeError) as e:
             current_app.logger.error(f"❌ API LATEST (PARSE FAIL): 為 {buy_currency}-{sell_currency} 解析即時抓取數據時出錯: {e}")
             return None 
+
+    def get_cached_pairs(self):
+        """獲取所有快取中的貨幣對"""
+        with self.lru_cache.lock, self.latest_rate_cache.lock:
+            # 清理過期快取以獲取最新狀態
+            self.lru_cache.clear_expired()
+            self.latest_rate_cache.clear_expired()
+
+            pairs = set()
+
+            # 從圖表快取獲取
+            for key in self.lru_cache.cache.keys():
+                if isinstance(key, tuple) and len(key) == 3:
+                    _, buy, sell = key
+                    pairs.add((buy, sell))
+
+            # 從最新匯率快取獲取
+            for key in self.latest_rate_cache.cache.keys():
+                if isinstance(key, tuple) and len(key) == 2:
+                    buy, sell = key
+                    pairs.add((buy, sell))
+            
+            # 轉換為列表並排序
+            sorted_pairs = sorted(list(pairs))
+            
+            return [{'buy_currency': p[0], 'sell_currency': p[1]} for p in sorted_pairs] 

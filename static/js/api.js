@@ -18,4 +18,10 @@ export function triggerPregeneration(fromCurrency = 'TWD', toCurrency = 'HKD') {
     .then(response => response.json())
     
     .catch(error => console.error('❌ 預生成錯誤:', error));
+}
+
+export async function fetchCachedPairs() {
+  const res = await fetch('/api/cached_pairs');
+  if (!res.ok) throw new Error('獲取快取記錄失敗');
+  return await res.json();
 } 

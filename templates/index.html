@@ -28,6 +28,7 @@
               <button class="period-btn" data-period="90">近3個月</button>
               <button class="period-btn" data-period="180">近6個月</button>
             </div>
+            <button id="history-btn" class="control-btn">歷史記錄</button>
           </div>
         </div>
 
@@ -125,6 +126,25 @@
             </div>
         </div>
         
+      </div>
+    </div>
+  </div>
+
+  <!-- History Popup -->
+  <div id="history-popup-overlay" class="popup-overlay" style="display: none;">
+    <div class="popup-content">
+      <div class="popup-header">
+        <h3 class="popup-title">查詢記錄</h3>
+        <button class="popup-close" id="history-popup-close-btn">×</button>
+      </div>
+      <div class="popup-body">
+        <div class="history-controls">
+          <button id="user-history-btn" class="history-tab-btn active">瀏覽記錄</button>
+          <button id="server-history-btn" class="history-tab-btn">快取記錄</button>
+        </div>
+        <div id="history-list" class="history-list">
+          <!-- History items will be populated here -->
+        </div>
       </div>
     </div>
   </div>

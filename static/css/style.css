@@ -1370,3 +1370,88 @@ body {
     50% { opacity: 0.7; transform: scale(1.1); }
     100% { opacity: 1; transform: scale(1); }
 } 
+
+/* control button style, like history button */
+.control-btn {
+    background-color: #f8f9fa;
+    border: 1px solid #dee2e6;
+    color: #495057;
+    padding: 8px 16px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.8rem;
+    transition: all 0.2s ease;
+    margin-left: 10px;
+}
+
+.control-btn:hover {
+    background-color: #e9ecef;
+    border-color: #ced4da;
+}
+
+/* History Popup Specific Styles */
+.history-controls {
+    display: flex;
+    border-bottom: 1px solid #e9ecef;
+    margin-bottom: 12px;
+}
+
+.history-tab-btn {
+    padding: 10px 16px;
+    border: none;
+    background-color: transparent;
+    cursor: pointer;
+    font-size: 0.9rem;
+    color: #6c757d;
+    transition: all 0.2s ease;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px; /* Overlap the container's border */
+}
+
+.history-tab-btn:hover {
+    color: #2E86AB;
+}
+
+.history-tab-btn.active {
+    color: #2E86AB;
+    font-weight: 600;
+    border-bottom-color: #2E86AB;
+}
+
+.history-list {
+    max-height: 400px;
+    overflow-y: auto;
+    padding-right: 5px; /* for scrollbar */
+}
+
+.history-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 8px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background-color 0.2s ease;
+    font-size: 0.9rem;
+}
+
+.history-item:hover {
+    background-color: #f8f9fa;
+}
+
+.history-item span {
+    font-weight: 500;
+}
+
+.history-item .history-arrow {
+    color: #A23B72;
+    font-size: 1.2rem;
+    font-family: 'Segoe UI Symbol', sans-serif; /* Better arrow rendering */
+}
+
+.history-empty {
+    text-align: center;
+    padding: 40px 20px;
+    color: #6c757d;
+    font-size: 0.9rem;
+} 

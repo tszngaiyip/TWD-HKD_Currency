@@ -1,4 +1,4 @@
-import { fetchChart, loadLatestRate, triggerPregeneration } from './api.js';
+import { fetchChart, loadLatestRate, triggerPregeneration, fetchCachedPairs } from './api.js';
 import { 
   displayLatestRate, 
   showRateError, 
@@ -12,9 +12,13 @@ import {
   renderChart,
   updateDateRange,
   updatePeriodButtons,
-  handleChartError
+  handleChartError,
+  openHistoryPopup,
+  closeHistoryPopup,
+  renderHistoryList
 } from './dom.js';
 import { CurrencyManager } from './currency_manager.js';
+import { userHistoryManager } from './history_manager.js';
 
 // 全域變數
 let currentPeriod = '7'; // 預設圖表週期
@@ -96,6 +100,8 @@ document.addEventListener('DOMContentLoaded', async function () {
   
   // 綁定其他按鈕事件
   setupEventListeners();
+  // 綁定歷史記錄彈窗事件
+  setupHistoryPopup();
 });
 
 // 設置貨幣選擇器事件（統一搜索下拉選單）
@@ -352,23 +358,31 @@ function setupSSEConnection() {
   });
   
   // 監聽 'chart_ready' 事件
-  eventSource.addEventListener('chart_ready', function(event) {
-    const data = JSON.parse(event.data);
-    
-    // 將所有收到的、屬於當前貨幣對的圖表數據都存入快取
-    if (data.from_currency === currencyManager.currentFromCurrency && data.to_currency === currencyManager.currentToCurrency) {
-        const cacheKey = `${data.from_currency}_${data.to_currency}_${data.period}`;
-        chartCache[cacheKey] = data;
+  eventSource.addEventListener('chart_ready', (event) => {
+    const chartData = JSON.parse(event.data);
 
-        // 只有當收到的圖表週期與當前選定的週期相符時，才立即渲染
-        if (String(data.period) === String(currentPeriod)) {
-            hideGlobalProgressBar(() => {
-                renderChart(data.chart_url, data.stats, data.from_currency, data.to_currency, data.period);
-                updateDateRange(data.stats.date_range);
-                updatePeriodButtons(data.period);
-                currencyManager.setLoading('chart', false);
-            });
-        }
+    if (
+      chartData.buy_currency === currencyManager.currentFromCurrency &&
+      chartData.sell_currency === currencyManager.currentToCurrency
+    ) {
+      // 隱藏全域進度條
+      hideGlobalProgressBar(() => {
+        // 渲染圖表
+        renderChart(chartData.chart_url, chartData.stats, chartData.buy_currency, chartData.sell_currency, chartData.period);
+        
+        // 更新日期範圍
+        updateDateRange(chartData.stats.date_range);
+
+        // 更新前端快取
+        const cacheKey = `${chartData.buy_currency}_${chartData.sell_currency}_${chartData.period}`;
+        chartCache[cacheKey] = chartData;
+
+        // Add to user history
+        userHistoryManager.addPair(chartData.buy_currency, chartData.sell_currency);
+
+        // 一旦圖表準備就緒，設定載入狀態為 false
+        currencyManager.setLoading('chart', false);
+      });
     }
   });
   
@@ -482,4 +496,67 @@ function setupEventListeners() {
       }
     });
   }
+}
+
+function setupHistoryPopup() {
+  const historyBtn = document.getElementById('history-btn');
+  const historyPopupCloseBtn = document.getElementById('history-popup-close-btn');
+  const userHistoryBtn = document.getElementById('user-history-btn');
+  const serverHistoryBtn = document.getElementById('server-history-btn');
+  const historyList = document.getElementById('history-list');
+
+  if (!historyBtn || !historyPopupCloseBtn || !userHistoryBtn || !serverHistoryBtn || !historyList) {
+    console.error('History popup elements not found');
+    return;
+  }
+
+  const loadUserHistory = () => {
+    const history = userHistoryManager.getHistory();
+    renderHistoryList(history, 'user');
+  };
+
+  const loadServerHistory = async () => {
+    try {
+      const pairs = await fetchCachedPairs();
+      renderHistoryList(pairs, 'server');
+    } catch (error) {
+      console.error('Failed to load server history:', error);
+      renderHistoryList([], 'server'); // Show empty state on error
+    }
+  };
+
+  historyBtn.addEventListener('click', () => {
+    openHistoryPopup();
+    // Default to server history view
+    serverHistoryBtn.classList.add('active');
+    userHistoryBtn.classList.remove('active');
+    loadServerHistory();
+  });
+
+  historyPopupCloseBtn.addEventListener('click', closeHistoryPopup);
+
+  userHistoryBtn.addEventListener('click', () => {
+    userHistoryBtn.classList.add('active');
+    serverHistoryBtn.classList.remove('active');
+    loadUserHistory();
+  });
+
+  serverHistoryBtn.addEventListener('click', () => {
+    serverHistoryBtn.classList.add('active');
+    userHistoryBtn.classList.remove('active');
+    loadServerHistory();
+  });
+
+  historyList.addEventListener('click', (e) => {
+    const item = e.target.closest('.history-item');
+    if (item) {
+      const buyCurrency = item.dataset.buyCurrency;
+      const sellCurrency = item.dataset.sellCurrency;
+      
+      if (buyCurrency && sellCurrency) {
+        closeHistoryPopup();
+        currencyManager.switchCurrencies(buyCurrency, sellCurrency);
+      }
+    }
+  });
 }

@@ -198,6 +198,16 @@ def pregenerate_charts_api():
             'message': f'預生成圖表失敗: {str(e)}'
         }), 500
 
+@bp.route('/api/cached_pairs')
+def get_cached_pairs():
+    """獲取伺服器快取中的所有貨幣對"""
+    try:
+        cached_pairs = current_app.manager.get_cached_pairs()
+        return jsonify(cached_pairs)
+    except Exception as e:
+        current_app.logger.error(f"獲取快取貨幣對列表時發生錯誤: {e}", exc_info=True)
+        return jsonify({'error': '無法獲取快取列表'}), 500
+
 @bp.route('/api/events')
 def sse_events():
     """SSE事件端點"""

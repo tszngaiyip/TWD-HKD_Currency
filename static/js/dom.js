@@ -315,3 +315,42 @@ export function updateDateRange(dateRangeText) {
         drEl.textContent = `數據範圍: ${dateRangeText}`;
     }
 }
+
+// --- History Popup ---
+
+export function openHistoryPopup() {
+  const popup = document.getElementById('history-popup-overlay');
+  if (popup) {
+    popup.style.display = 'flex';
+    setTimeout(() => popup.classList.add('show'), 10);
+  }
+}
+
+export function closeHistoryPopup() {
+  const popup = document.getElementById('history-popup-overlay');
+  if (popup) {
+    popup.classList.remove('show');
+    setTimeout(() => {
+      popup.style.display = 'none';
+    }, 300);
+  }
+}
+
+export function renderHistoryList(pairs, type) {
+  const listEl = document.getElementById('history-list');
+  if (!listEl) return;
+
+  if (!pairs || pairs.length === 0) {
+    const message = type === 'user' ? '你還沒有任何瀏覽記錄' : '伺服器尚無任何快取記錄';
+    listEl.innerHTML = `<div class="history-empty">${message}</div>`;
+    return;
+  }
+
+  listEl.innerHTML = pairs.map(pair => `
+    <div class="history-item" data-buy-currency="${pair.buy_currency}" data-sell-currency="${pair.sell_currency}">
+      <span>${pair.buy_currency}</span>
+      <span class="history-arrow">→</span>
+      <span>${pair.sell_currency}</span>
+    </div>
+  `).join('');
+}
