@@ -334,28 +334,7 @@ function updateDisplay() {
   }
 }
 
-function checkDataStatus() {
-  fetch('/api/data_status')
-    .then(response => response.json())
-    .then(data => {
-      const statusContent = Object.entries(data).map(([file, info]) => {
-        const statusIcon = info.exists ? (info.is_recent ? '✅' : '⚠️') : '❌';
-        const recentText = info.exists ? (info.is_recent ? ' (最新)' : ' (過舊)') : '';
-        const dateText = info.last_modified ? ` - ${info.last_modified}` : '';
-        return `<li>${statusIcon} ${file}${recentText}${dateText}</li>`;
-      }).join('');
-      showPopup('📊 數據狀態', `<ul>${statusContent}</ul>`);
-    })
-    .catch(error => {
-      console.error('獲取數據狀態失敗:', error);
-      const errorContent = `
-        <p>無法獲取數據狀態。請檢查您的網路連線或稍後再試。</p>
-        <p><strong>錯誤詳情:</strong> ${error.message}</p>
-      `;
-      showPopup('📊 數據狀態', errorContent);
-    });
-}
-
+// SSE 連接
 function setupSSEConnection() {
   if (eventSource) {
     eventSource.close();
@@ -462,36 +441,45 @@ function setupConfirmButton() {
   }
 }
 
+/**
+ * 統一設置事件監聽器
+ */
 function setupEventListeners() {
-  // 圖表週期按鈕
-  document.querySelectorAll('.period-btn').forEach(btn => {
-    btn.addEventListener('click', async (event) => {
-      currentPeriod = event.target.dataset.period;
-      // 更新按鈕狀態
+  // 切換圖表週期的按鈕
+  const periodButtons = document.querySelectorAll('.period-btn');
+  periodButtons.forEach(button => {
+    button.addEventListener('click', () => {
+      // 獲取被點擊的按鈕的週期
+      const newPeriod = button.dataset.period;
+
+      // 如果點擊的是當前的週期，則不執行任何操作
+      if (currentPeriod === newPeriod) {
+        return;
+      }
+      
+      // 更新當前週期
+      currentPeriod = newPeriod;
+
+      // 立即更新按鈕的 UI 狀態
       updatePeriodButtons(currentPeriod);
-      // 重新載入圖表
-      await currencyManager.loadChart();
+      
+      // 使用 currencyManager 的方法來載入圖表
+      currencyManager.loadChart();
     });
   });
 
-  // 數據狀態按鈕
-  const statusBtn = document.getElementById('status-btn');
-  if (statusBtn) {
-    statusBtn.addEventListener('click', checkDataStatus);
+  // Popup 關閉按鈕
+  const popupCloseBtn = document.getElementById('popup-close-btn');
+  if (popupCloseBtn) {
+    popupCloseBtn.addEventListener('click', closePopup);
   }
 
-  // 關閉彈出視窗
-  const closeBtn = document.getElementById('popup-close-btn');
-  if (closeBtn) {
-    closeBtn.addEventListener('click', closePopup);
-  }
-  
   const popupOverlay = document.getElementById('popup-overlay');
   if (popupOverlay) {
-      popupOverlay.addEventListener('click', (e) => {
-          if (e.target === popupOverlay) {
-              closePopup();
-          }
-      });
+    popupOverlay.addEventListener('click', (e) => {
+      if (e.target === popupOverlay) {
+        closePopup();
+      }
+    });
   }
 }

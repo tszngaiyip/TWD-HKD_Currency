@@ -47,6 +47,11 @@ class CurrencyManager {
       this.updateUIStates();
     }
   
+    // 新增：檢查圖表是否正在載入中
+    isChartLoading() {
+      return this.loadingStates.chart;
+    }
+  
     // 更新UI狀態（禁用/啟用按鈕）
     updateUIStates() {
       const isLoading = !this.canSwitchCurrency();

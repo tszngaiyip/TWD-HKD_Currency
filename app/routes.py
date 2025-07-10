@@ -47,32 +47,6 @@ def get_chart():
         current_app.logger.error(f"處理圖表請求時發生未預期的錯誤: {e}", exc_info=True)
         return jsonify({'error': '伺服器內部錯誤', 'processing_time': round(processing_time, 3)}), 500
 
-@bp.route('/api/data_status')
-def data_status():
-    """檢查數據狀態"""
-    total_records = len(current_app.manager.data)
-
-    if total_records > 0:
-        dates = current_app.manager.get_sorted_dates()
-        earliest_date = dates[0]
-        latest_date = dates[-1]
-        earliest = datetime.strptime(earliest_date, '%Y-%m-%d')
-        latest = datetime.strptime(latest_date, '%Y-%m-%d')
-        data_span_days = (latest - earliest).days + 1
-    else:
-        earliest_date = None
-        latest_date = None
-        data_span_days = 0
-
-    return jsonify({
-        'total_records': total_records,
-        'earliest_date': earliest_date,
-        'latest_date': latest_date,
-        'data_span_days': data_span_days,
-        'data_retention_policy': '保留最近 180 天的資料',
-        'last_updated': datetime.now().isoformat()
-    })
-
 @bp.route('/api/latest_rate')
 def get_latest_rate():
     """獲取最新匯率的API端點，完全依賴 ExchangeRateManager 處理"""
