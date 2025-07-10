@@ -42,7 +42,7 @@ def create_app():
         app.manager.update_data(180)
         
         print("📊 預生成圖表...")
-        app.manager.pregenerate_all_charts()
+        app.manager.warm_up_chart_cache()
 
         # 啟動定時任務
         init_scheduler(app)

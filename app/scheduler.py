@@ -38,7 +38,7 @@ def scheduled_update():
                     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 定時更新完成，成功獲取今天的匯率: {conversion_rate}")
 
                     # 預生成所有圖表
-                    manager.pregenerate_all_charts()
+                    manager.warm_up_chart_cache()
 
                     # 發送SSE事件通知前端更新
                     send_sse_event('rate_updated', {

@@ -82,21 +82,21 @@ def get_latest_rate():
     sell_currency = request.args.get('sell_currency', 'HKD')
     
     try:
-        latest_data = current_app.manager.get_latest_rate_with_fallback(buy_currency, sell_currency)
+        latest_data = current_app.manager.get_current_rate(buy_currency, sell_currency)
         processing_time = time.time() - start_time
         
         if latest_data:
             current_rate = latest_data['rate']
             is_best = False
             for p in [7, 30, 90, 180]:
-                dates, rates = current_app.manager.get_historical_rates_for_period(p)
+                dates, rates = current_app.manager.extract_local_rates(p)
                 if rates and current_rate <= min(rates):
                     latest_data['best_period'] = p
                     latest_data['is_best'] = True
                     is_best = True
                     break
             if not is_best:
-                dates30, rates30 = current_app.manager.get_historical_rates_for_period(30)
+                dates30, rates30 = current_app.manager.extract_local_rates(30)
                 if rates30:
                     latest_data['lowest_rate'] = min(rates30)
                     latest_data['lowest_period'] = 30
@@ -251,7 +251,7 @@ def pregenerate_charts_api():
     
     try:
         print(f"🚀 API觸發：請求為 {buy_currency}-{sell_currency} 啟動生成/通知流程...")
-        current_app.manager.pregenerate_all_charts(buy_currency, sell_currency)
+        current_app.manager.warm_up_chart_cache(buy_currency, sell_currency)
         
         return jsonify({
             'success': True, 
