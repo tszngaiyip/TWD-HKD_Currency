@@ -222,28 +222,10 @@ def pregenerate_charts_api():
 @bp.route('/api/cached_pairs')
 def get_cached_pairs():
     """獲取伺服器快取中的所有貨幣對"""
-    import signal
-    
-    def timeout_handler(signum, frame):
-        raise TimeoutError("操作超時")
-    
     try:
-        # 設置 10 秒超時
-        signal.signal(signal.SIGALRM, timeout_handler)
-        signal.alarm(10)
-        
         cached_pairs = current_app.manager.get_cached_pairs()
-        
-        # 取消超時
-        signal.alarm(0)
-        
         return jsonify(cached_pairs)
-    except TimeoutError:
-        signal.alarm(0)
-        current_app.logger.error("獲取快取貨幣對列表操作超時")
-        return jsonify({'error': '操作超時，請稍後再試'}), 500
     except Exception as e:
-        signal.alarm(0)
         current_app.logger.error(f"獲取快取貨幣對列表時發生錯誤: {e}", exc_info=True)
         return jsonify({'error': '無法獲取快取列表'}), 500
 
