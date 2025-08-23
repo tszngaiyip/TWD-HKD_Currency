@@ -799,26 +799,36 @@ class ExchangeRateManager:
 
     def get_cached_pairs(self):
         """獲取所有快取中的貨幣對"""
-        with self.lru_cache.lock, self.latest_rate_cache.lock:
-            # 清理過期快取以獲取最新狀態
-            self.lru_cache.clear_expired()
-            self.latest_rate_cache.clear_expired()
-
+        try:
             pairs = set()
 
-            # 從圖表快取獲取
-            for key in self.lru_cache.cache.keys():
-                if isinstance(key, tuple) and len(key) == 3:
-                    _, buy, sell = key
-                    pairs.add((buy, sell))
+            # 安全地清理和獲取圖表快取
+            try:
+                self.lru_cache.clear_expired()
+                with self.lru_cache.lock:
+                    for key in list(self.lru_cache.cache.keys()):
+                        if isinstance(key, tuple) and len(key) == 3:
+                            _, buy, sell = key
+                            pairs.add((buy, sell))
+            except Exception as e:
+                print(f"⚠️ 獲取圖表快取時發生錯誤: {e}")
 
-            # 從最新匯率快取獲取
-            for key in self.latest_rate_cache.cache.keys():
-                if isinstance(key, tuple) and len(key) == 2:
-                    buy, sell = key
-                    pairs.add((buy, sell))
+            # 安全地清理和獲取匯率快取
+            try:
+                self.latest_rate_cache.clear_expired()
+                with self.latest_rate_cache.lock:
+                    for key in list(self.latest_rate_cache.cache.keys()):
+                        if isinstance(key, tuple) and len(key) == 2:
+                            buy, sell = key
+                            pairs.add((buy, sell))
+            except Exception as e:
+                print(f"⚠️ 獲取匯率快取時發生錯誤: {e}")
             
             # 轉換為列表並排序
             sorted_pairs = sorted(list(pairs))
             
-            return [{'buy_currency': p[0], 'sell_currency': p[1]} for p in sorted_pairs] 
+            return [{'buy_currency': p[0], 'sell_currency': p[1]} for p in sorted_pairs]
+            
+        except Exception as e:
+            print(f"❌ get_cached_pairs 發生錯誤: {e}")
+            return [] 

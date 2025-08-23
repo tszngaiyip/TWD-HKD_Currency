@@ -1,0 +1,477 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>API Flow Test Page</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            margin: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .test-section {
+            margin: 20px 0;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+        .test-section h3 {
+            margin-top: 0;
+            color: #333;
+        }
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover {
+            background: #0056b3;
+        }
+        button:disabled {
+            background: #6c757d;
+            cursor: not-allowed;
+        }
+        .result {
+            margin-top: 10px;
+            padding: 10px;
+            border-radius: 4px;
+            font-family: monospace;
+            white-space: pre-wrap;
+        }
+        .success {
+            background: #d4edda;
+            border: 1px solid #c3e6cb;
+            color: #155724;
+        }
+        .error {
+            background: #f8d7da;
+            border: 1px solid #f5c6cb;
+            color: #721c24;
+        }
+        .info {
+            background: #d1ecf1;
+            border: 1px solid #bee5eb;
+            color: #0c5460;
+        }
+        .loading {
+            background: #fff3cd;
+            border: 1px solid #ffeaa7;
+            color: #856404;
+        }
+        #sse-events {
+            max-height: 200px;
+            overflow-y: auto;
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            padding: 10px;
+            margin-top: 10px;
+        }
+        .summary {
+            background: #e7f1ff;
+            border: 1px solid #b6d7ff;
+            padding: 15px;
+            margin-top: 20px;
+            border-radius: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔬 API Request Flow Testing</h1>
+        <p>檢查所有發送request的流程，並確認功能都能正常運作</p>
+        
+        <div class="summary">
+            <h3>測試摘要</h3>
+            <div id="test-summary">準備開始測試...</div>
+        </div>
+
+        <div class="test-section">
+            <h3>🌐 Server Status</h3>
+            <button onclick="testServerStatus()">Test Server Status</button>
+            <div id="server-status-result" class="result"></div>
+        </div>
+
+        <div class="test-section">
+            <h3>💱 Latest Rate API</h3>
+            <button onclick="testLatestRate('TWD', 'HKD')">Test TWD-HKD</button>
+            <button onclick="testLatestRate('USD', 'HKD')">Test USD-HKD</button>
+            <button onclick="testLatestRate('HKD', 'TWD')">Test HKD-TWD</button>
+            <div id="latest-rate-result" class="result"></div>
+        </div>
+
+        <div class="test-section">
+            <h3>📊 Chart API</h3>
+            <button onclick="testChart(7, 'TWD', 'HKD')">Test 7d TWD-HKD</button>
+            <button onclick="testChart(30, 'TWD', 'HKD')">Test 30d TWD-HKD</button>
+            <button onclick="testChart(90, 'USD', 'HKD')">Test 90d USD-HKD</button>
+            <div id="chart-result" class="result"></div>
+        </div>
+
+        <div class="test-section">
+            <h3>🚀 Pregenerate Charts</h3>
+            <button onclick="testPregenerate('TWD', 'HKD')">Pregenerate TWD-HKD</button>
+            <button onclick="testPregenerate('USD', 'HKD')">Pregenerate USD-HKD</button>
+            <div id="pregenerate-result" class="result"></div>
+        </div>
+
+        <div class="test-section">
+            <h3>💾 Cached Pairs</h3>
+            <button onclick="testCachedPairs()">Get Cached Pairs</button>
+            <div id="cached-pairs-result" class="result"></div>
+        </div>
+
+        <div class="test-section">
+            <h3>⏰ Schedule Management</h3>
+            <button onclick="testScheduleStatus()">Schedule Status</button>
+            <button onclick="testTriggerUpdate()">Trigger Update</button>
+            <button onclick="testForceCleanup()">Force Cleanup</button>
+            <div id="schedule-result" class="result"></div>
+        </div>
+
+        <div class="test-section">
+            <h3>🔄 SSE Events</h3>
+            <button onclick="connectSSE()" id="sse-connect-btn">Connect to SSE</button>
+            <button onclick="disconnectSSE()" id="sse-disconnect-btn" disabled>Disconnect SSE</button>
+            <div id="sse-events"></div>
+        </div>
+
+        <div class="test-section">
+            <h3>🎯 Run All Tests</h3>
+            <button onclick="runAllTests()" id="run-all-btn">Run All Tests</button>
+            <div id="all-tests-result" class="result"></div>
+        </div>
+    </div>
+
+    <script>
+        let eventSource = null;
+        let testResults = {};
+        let testCount = 0;
+        let passCount = 0;
+
+        function updateSummary() {
+            const summary = document.getElementById('test-summary');
+            const successRate = testCount > 0 ? ((passCount / testCount) * 100).toFixed(1) : 0;
+            summary.textContent = `總測試: ${testCount}, 通過: ${passCount}, 失敗: ${testCount - passCount}, 成功率: ${successRate}%`;
+        }
+
+        function logResult(testName, success, details = '') {
+            testResults[testName] = { success, details, timestamp: new Date() };
+            testCount++;
+            if (success) passCount++;
+            updateSummary();
+        }
+
+        function showResult(elementId, success, message, data = null) {
+            const element = document.getElementById(elementId);
+            element.className = `result ${success ? 'success' : 'error'}`;
+            let content = `${success ? '✅' : '❌'} ${message}`;
+            if (data) {
+                content += '\n\n' + JSON.stringify(data, null, 2);
+            }
+            element.textContent = content;
+        }
+
+        function showLoading(elementId, message) {
+            const element = document.getElementById(elementId);
+            element.className = 'result loading';
+            element.textContent = `⏳ ${message}`;
+        }
+
+        async function testServerStatus() {
+            showLoading('server-status-result', 'Testing server status...');
+            try {
+                const response = await fetch('/api/server_status');
+                const data = await response.json();
+                
+                if (response.ok && data.server_instance_id) {
+                    showResult('server-status-result', true, 'Server status OK', data);
+                    logResult('Server Status', true, `Instance ID: ${data.server_instance_id.substring(0, 8)}...`);
+                } else {
+                    showResult('server-status-result', false, 'Server status failed', data);
+                    logResult('Server Status', false, 'No instance ID in response');
+                }
+            } catch (error) {
+                showResult('server-status-result', false, `Error: ${error.message}`);
+                logResult('Server Status', false, error.message);
+            }
+        }
+
+        async function testLatestRate(fromCurrency, toCurrency) {
+            const pair = `${fromCurrency}-${toCurrency}`;
+            showLoading('latest-rate-result', `Getting latest rate for ${pair}...`);
+            
+            try {
+                const params = new URLSearchParams({ buy_currency: fromCurrency, sell_currency: toCurrency });
+                const response = await fetch(`/api/latest_rate?${params}`);
+                const data = await response.json();
+                
+                if (response.ok && data.rate) {
+                    showResult('latest-rate-result', true, `${pair} rate: ${data.rate}`, data);
+                    logResult(`Latest Rate ${pair}`, true, `Rate: ${data.rate}`);
+                } else {
+                    showResult('latest-rate-result', false, `Failed to get ${pair} rate`, data);
+                    logResult(`Latest Rate ${pair}`, false, data.error || 'Unknown error');
+                }
+            } catch (error) {
+                showResult('latest-rate-result', false, `Error: ${error.message}`);
+                logResult(`Latest Rate ${pair}`, false, error.message);
+            }
+        }
+
+        async function testChart(period, fromCurrency, toCurrency) {
+            const pair = `${fromCurrency}-${toCurrency}`;
+            showLoading('chart-result', `Generating ${period}d chart for ${pair}...`);
+            
+            try {
+                const params = new URLSearchParams({ period, buy_currency: fromCurrency, sell_currency: toCurrency });
+                const response = await fetch(`/api/chart?${params}`);
+                const data = await response.json();
+                
+                if (response.ok && data.chart_url) {
+                    showResult('chart-result', true, `${period}d ${pair} chart generated`, { chart_url: data.chart_url, processing_time: data.processing_time });
+                    logResult(`Chart ${period}d ${pair}`, true, `Generated in ${data.processing_time}s`);
+                } else {
+                    showResult('chart-result', false, `Failed to generate ${period}d ${pair} chart`, data);
+                    logResult(`Chart ${period}d ${pair}`, false, data.error || 'Unknown error');
+                }
+            } catch (error) {
+                showResult('chart-result', false, `Error: ${error.message}`);
+                logResult(`Chart ${period}d ${pair}`, false, error.message);
+            }
+        }
+
+        async function testPregenerate(fromCurrency, toCurrency) {
+            const pair = `${fromCurrency}-${toCurrency}`;
+            showLoading('pregenerate-result', `Triggering pregeneration for ${pair}...`);
+            
+            try {
+                const params = new URLSearchParams({ buy_currency: fromCurrency, sell_currency: toCurrency });
+                const response = await fetch(`/api/pregenerate_charts?${params}`);
+                const data = await response.json();
+                
+                if (response.ok && data.success) {
+                    showResult('pregenerate-result', true, `${pair} pregeneration triggered`, data);
+                    logResult(`Pregenerate ${pair}`, true, data.message);
+                } else {
+                    showResult('pregenerate-result', false, `Failed to trigger ${pair} pregeneration`, data);
+                    logResult(`Pregenerate ${pair}`, false, data.message || 'Unknown error');
+                }
+            } catch (error) {
+                showResult('pregenerate-result', false, `Error: ${error.message}`);
+                logResult(`Pregenerate ${pair}`, false, error.message);
+            }
+        }
+
+        async function testCachedPairs() {
+            showLoading('cached-pairs-result', 'Getting cached pairs...');
+            
+            try {
+                const response = await fetch('/api/cached_pairs');
+                const data = await response.json();
+                
+                if (response.ok && Array.isArray(data)) {
+                    showResult('cached-pairs-result', true, `Found ${data.length} cached pairs`, data);
+                    logResult('Cached Pairs', true, `${data.length} pairs found`);
+                } else {
+                    showResult('cached-pairs-result', false, 'Failed to get cached pairs', data);
+                    logResult('Cached Pairs', false, data.error || 'Invalid response format');
+                }
+            } catch (error) {
+                showResult('cached-pairs-result', false, `Error: ${error.message}`);
+                logResult('Cached Pairs', false, error.message);
+            }
+        }
+
+        async function testScheduleStatus() {
+            showLoading('schedule-result', 'Getting schedule status...');
+            
+            try {
+                const response = await fetch('/api/schedule_status');
+                const data = await response.json();
+                
+                if (response.ok && data.success) {
+                    showResult('schedule-result', true, 'Schedule status retrieved', data);
+                    logResult('Schedule Status', true, `Active: ${data.data.is_active}`);
+                } else {
+                    showResult('schedule-result', false, 'Failed to get schedule status', data);
+                    logResult('Schedule Status', false, data.message || 'Unknown error');
+                }
+            } catch (error) {
+                showResult('schedule-result', false, `Error: ${error.message}`);
+                logResult('Schedule Status', false, error.message);
+            }
+        }
+
+        async function testTriggerUpdate() {
+            showLoading('schedule-result', 'Triggering scheduled update...');
+            
+            try {
+                const response = await fetch('/api/trigger_scheduled_update');
+                const data = await response.json();
+                
+                if (response.ok && data.success) {
+                    showResult('schedule-result', true, 'Scheduled update triggered', data);
+                    logResult('Trigger Update', true, data.message);
+                } else {
+                    showResult('schedule-result', false, 'Failed to trigger update', data);
+                    logResult('Trigger Update', false, data.message || 'Unknown error');
+                }
+            } catch (error) {
+                showResult('schedule-result', false, `Error: ${error.message}`);
+                logResult('Trigger Update', false, error.message);
+            }
+        }
+
+        async function testForceCleanup() {
+            showLoading('schedule-result', 'Forcing data cleanup...');
+            
+            try {
+                const response = await fetch('/api/force_cleanup_data');
+                const data = await response.json();
+                
+                if (response.ok && data.success) {
+                    showResult('schedule-result', true, 'Data cleanup completed', data);
+                    logResult('Force Cleanup', true, `Old: ${data.old_count}, New: ${data.new_count}`);
+                } else {
+                    showResult('schedule-result', false, 'Failed to cleanup data', data);
+                    logResult('Force Cleanup', false, data.message || 'Unknown error');
+                }
+            } catch (error) {
+                showResult('schedule-result', false, `Error: ${error.message}`);
+                logResult('Force Cleanup', false, error.message);
+            }
+        }
+
+        function connectSSE() {
+            if (eventSource) {
+                eventSource.close();
+            }
+            
+            const eventsDiv = document.getElementById('sse-events');
+            eventsDiv.innerHTML = '🔌 Connecting to SSE...\n';
+            
+            eventSource = new EventSource('/api/events');
+            
+            eventSource.onopen = function(event) {
+                eventsDiv.innerHTML += '✅ SSE Connected\n';
+                document.getElementById('sse-connect-btn').disabled = true;
+                document.getElementById('sse-disconnect-btn').disabled = false;
+                logResult('SSE Connection', true, 'Connected successfully');
+            };
+            
+            eventSource.onmessage = function(event) {
+                eventsDiv.innerHTML += `📨 Message: ${event.data}\n`;
+                eventsDiv.scrollTop = eventsDiv.scrollHeight;
+            };
+            
+            eventSource.addEventListener('connected', function(event) {
+                eventsDiv.innerHTML += `🎉 Connected Event: ${event.data}\n`;
+                eventsDiv.scrollTop = eventsDiv.scrollHeight;
+            });
+            
+            eventSource.addEventListener('progress_update', function(event) {
+                eventsDiv.innerHTML += `📊 Progress: ${event.data}\n`;
+                eventsDiv.scrollTop = eventsDiv.scrollHeight;
+            });
+            
+            eventSource.addEventListener('chart_ready', function(event) {
+                eventsDiv.innerHTML += `📈 Chart Ready: ${event.data}\n`;
+                eventsDiv.scrollTop = eventsDiv.scrollHeight;
+            });
+            
+            eventSource.onerror = function(event) {
+                eventsDiv.innerHTML += '❌ SSE Error occurred\n';
+                eventsDiv.scrollTop = eventsDiv.scrollHeight;
+                logResult('SSE Connection', false, 'Connection error');
+            };
+        }
+
+        function disconnectSSE() {
+            if (eventSource) {
+                eventSource.close();
+                eventSource = null;
+                document.getElementById('sse-events').innerHTML += '🔌 Disconnected from SSE\n';
+                document.getElementById('sse-connect-btn').disabled = false;
+                document.getElementById('sse-disconnect-btn').disabled = true;
+            }
+        }
+
+        async function runAllTests() {
+            const button = document.getElementById('run-all-btn');
+            button.disabled = true;
+            button.textContent = 'Running Tests...';
+            
+            // Reset counters
+            testResults = {};
+            testCount = 0;
+            passCount = 0;
+            updateSummary();
+            
+            showLoading('all-tests-result', 'Running comprehensive test suite...');
+            
+            try {
+                // Test server status
+                await testServerStatus();
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                
+                // Test latest rates
+                await testLatestRate('TWD', 'HKD');
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                await testLatestRate('USD', 'HKD');
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                
+                // Test charts
+                await testChart(7, 'TWD', 'HKD');
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                await testChart(30, 'TWD', 'HKD');
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                
+                // Test pregeneration
+                await testPregenerate('TWD', 'HKD');
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                
+                // Test cached pairs
+                await testCachedPairs();
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                
+                // Test schedule management
+                await testScheduleStatus();
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                
+                const successRate = testCount > 0 ? ((passCount / testCount) * 100).toFixed(1) : 0;
+                const summary = `Completed ${testCount} tests. ${passCount} passed, ${testCount - passCount} failed. Success rate: ${successRate}%`;
+                
+                showResult('all-tests-result', passCount === testCount, summary, {
+                    total: testCount,
+                    passed: passCount,
+                    failed: testCount - passCount,
+                    success_rate: successRate + '%',
+                    results: testResults
+                });
+                
+            } catch (error) {
+                showResult('all-tests-result', false, `Test suite failed: ${error.message}`);
+            } finally {
+                button.disabled = false;
+                button.textContent = 'Run All Tests';
+            }
+        }
+
+        // Initialize
+        updateSummary();
+    </script>
+</body>
+</html>
