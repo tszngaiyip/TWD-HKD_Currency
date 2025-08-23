@@ -17,6 +17,11 @@ def index():
     """主頁面"""
     return render_template('index.html')
 
+@bp.route('/test')
+def test_page():
+    """API 測試頁面"""
+    return current_app.send_static_file('api_test.html')
+
 @bp.route('/api/chart')
 def get_chart():
     """獲取圖表API - 支援多幣種並統一使用伺服器快取"""
@@ -40,12 +45,28 @@ def get_chart():
             chart_data['processing_time_ms'] = round(processing_time * 1000, 1)
             return jsonify(chart_data)
         else:
-            return jsonify({'error': '無法生成圖表', 'no_data': True, 'processing_time': round(processing_time, 3)}), 500
+            # 提供更詳細的錯誤信息
+            data_count = len(current_app.manager.data) if hasattr(current_app.manager, 'data') else 0
+            error_details = {
+                'error': '無法生成圖表', 
+                'no_data': True, 
+                'processing_time': round(processing_time, 3),
+                'data_available': data_count,
+                'period_requested': days,
+                'currency_pair': f"{buy_currency}-{sell_currency}"
+            }
+            return jsonify(error_details), 500
             
     except Exception as e:
         processing_time = time.time() - start_time
         current_app.logger.error(f"處理圖表請求時發生未預期的錯誤: {e}", exc_info=True)
-        return jsonify({'error': '伺服器內部錯誤', 'processing_time': round(processing_time, 3)}), 500
+        error_details = {
+            'error': '伺服器內部錯誤', 
+            'processing_time': round(processing_time, 3),
+            'error_type': type(e).__name__,
+            'currency_pair': f"{buy_currency}-{sell_currency}"
+        }
+        return jsonify(error_details), 500
 
 @bp.route('/api/latest_rate')
 def get_latest_rate():
@@ -201,10 +222,28 @@ def pregenerate_charts_api():
 @bp.route('/api/cached_pairs')
 def get_cached_pairs():
     """獲取伺服器快取中的所有貨幣對"""
+    import signal
+    
+    def timeout_handler(signum, frame):
+        raise TimeoutError("操作超時")
+    
     try:
+        # 設置 10 秒超時
+        signal.signal(signal.SIGALRM, timeout_handler)
+        signal.alarm(10)
+        
         cached_pairs = current_app.manager.get_cached_pairs()
+        
+        # 取消超時
+        signal.alarm(0)
+        
         return jsonify(cached_pairs)
+    except TimeoutError:
+        signal.alarm(0)
+        current_app.logger.error("獲取快取貨幣對列表操作超時")
+        return jsonify({'error': '操作超時，請稍後再試'}), 500
     except Exception as e:
+        signal.alarm(0)
         current_app.logger.error(f"獲取快取貨幣對列表時發生錯誤: {e}", exc_info=True)
         return jsonify({'error': '無法獲取快取列表'}), 500
 
