@@ -189,15 +189,23 @@ class CurrencyManager {
             if (this.deps.updatePeriodButtons) {
               this.deps.updatePeriodButtons(period);
             }
-            this.deps.hideGlobalProgressBar();
+            // 更新前端快取
+            if (this.deps.chartCache) {
+              this.deps.chartCache[cacheKey] = chartData;
+            }
+            // 成功載入，隱藏進度條並設定載入狀態為 false
+            if (this.deps.hideGlobalProgressBar) {
+              this.deps.hideGlobalProgressBar();
+            }
             this.setLoading('chart', false);
-            return;
+            return; // 直接返回，不需要預生成
           }
         }
       } catch (error) {
-        console.log(`直接圖表請求失敗，改用預生成模式: ${error.message}`);
+        console.warn('直接獲取圖表失敗，將使用預生成模式:', error);
       }
 
+      // 如果直接獲取失敗，則使用預生成模式
       // 設定載入超時 (例如 30 秒)
       this.chartLoadTimeout = setTimeout(() => {
         console.error(`圖表請求超時: ${fromCurrency}-${toCurrency}`);
