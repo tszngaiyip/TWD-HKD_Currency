@@ -173,6 +173,31 @@ class CurrencyManager {
       }
       this.setLoading('chart', true); // 顯示加載動畫
 
+      // 先嘗試直接獲取圖表，如果失敗則使用預生成模式
+      try {
+        const chartResponse = await fetch(`/api/chart?period=${period}&buy_currency=${fromCurrency}&sell_currency=${toCurrency}`);
+        if (chartResponse.ok) {
+          const chartData = await chartResponse.json();
+          if (chartData.chart_url) {
+            // 直接渲染圖表
+            if (this.deps.renderChart) {
+              this.deps.renderChart(chartData.chart_url, chartData.stats, fromCurrency, toCurrency, period);
+            }
+            if (this.deps.updateDateRange) {
+              this.deps.updateDateRange(chartData.stats.date_range);
+            }
+            if (this.deps.updatePeriodButtons) {
+              this.deps.updatePeriodButtons(period);
+            }
+            this.deps.hideGlobalProgressBar();
+            this.setLoading('chart', false);
+            return;
+          }
+        }
+      } catch (error) {
+        console.log(`直接圖表請求失敗，改用預生成模式: ${error.message}`);
+      }
+
       // 設定載入超時 (例如 30 秒)
       this.chartLoadTimeout = setTimeout(() => {
         console.error(`圖表請求超時: ${fromCurrency}-${toCurrency}`);
