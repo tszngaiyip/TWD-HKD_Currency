@@ -382,24 +382,13 @@ class ExchangeRateManager:
             if (buy_currency, sell_currency) not in self._active_fetches:
                 print(f"🌀 {buy_currency}-{sell_currency} 的背景抓取尚未啟動，現在於背景開始...")
                 self._active_fetches.add((buy_currency, sell_currency))
-                self.background_executor.submit(self._background_fetch_and_generate, buy_currency, sell_currency)
+                # 傳入 Flask app 物件，確保背景執行可建立 app_context
+                flask_app = current_app._get_current_object()
+                self.background_executor.submit(self._background_fetch_and_generate, buy_currency, sell_currency, flask_app)
             else:
                 print(f"✅ 預生成: {buy_currency}-{sell_currency} 的背景抓取已在進行中。")
 
-        # 無論是此線程還是其他線程啟動的，現在都等待圖表出現在快取中
-        print(f"⏳ 等待圖表 '{cache_key}' 由背景程序生成...")
-        
-        max_wait_seconds = 60
-        start_time = time.time()
-        
-        while time.time() - start_time < max_wait_seconds:
-            cached_info = self.lru_cache.get(cache_key)
-            if cached_info:
-                print(f"✅ 圖表 '{cache_key}' 已在快取中找到。")
-                return cached_info
-            time.sleep(1) # 等待1秒再試
-
-        print(f"⏰ 等待圖表 '{cache_key}' 超時。")
+        # 改為快速返回，讓前端透過 SSE 的 chart_ready 事件更新，不阻塞請求
         return None
 
     def build_chart_with_cache(self, days, buy_currency, sell_currency, live_rates_data=None):
@@ -807,7 +796,15 @@ class ExchangeRateManager:
                 self.lru_cache.clear_expired()
                 with self.lru_cache.lock:
                     for key in list(self.lru_cache.cache.keys()):
-                        if isinstance(key, tuple) and len(key) == 3:
+                        # 目前圖表快取鍵為字串: chart_{buy}_{sell}_{days}
+                        if isinstance(key, str) and key.startswith('chart_'):
+                            parts = key.split('_')
+                            if len(parts) >= 4:
+                                buy = parts[1]
+                                sell = parts[2]
+                                pairs.add((buy, sell))
+                        # 兼容舊版 tuple 形式
+                        elif isinstance(key, tuple) and len(key) == 3:
                             _, buy, sell = key
                             pairs.add((buy, sell))
             except Exception as e:
