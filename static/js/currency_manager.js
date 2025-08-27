@@ -143,6 +143,7 @@ class CurrencyManager {
       const period = this.deps.currentPeriod ? this.deps.currentPeriod() : 7;
       const cacheKey = `${fromCurrency}_${toCurrency}_${period}`;
 
+
       // 步驟 1: 檢查前端短期快取
       if (this.deps.chartCache && this.deps.chartCache[cacheKey]) {
         
@@ -157,6 +158,7 @@ class CurrencyManager {
         if (this.deps.updatePeriodButtons) {
           this.deps.updatePeriodButtons(period);
         }
+  // 快取命中，視為完成（全域進度條已由外部負責）
         this.setLoading('chart', false);
         return;
       }
@@ -193,6 +195,7 @@ class CurrencyManager {
             if (this.deps.chartCache) {
               this.deps.chartCache[cacheKey] = chartData;
             }
+            // 直接取得圖表成功，視為完成（全域進度條已由外部負責）
             // 成功載入，隱藏進度條並設定載入狀態為 false
             if (this.deps.hideGlobalProgressBar) {
               this.deps.hideGlobalProgressBar();

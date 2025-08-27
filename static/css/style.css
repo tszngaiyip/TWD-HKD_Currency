@@ -338,6 +338,8 @@ body {
     border-color: #ced4da;
 }
 
+/* 每個 period 按鈕的細小進度條 */
+
 /* 圓形進度條 */
 .progress-item {
     display: inline-flex;

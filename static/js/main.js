@@ -353,7 +353,19 @@ function setupSSEConnection() {
     const data = JSON.parse(event.data);
     // 確保進度條只為當前查看的貨幣對更新
     if (data.buy_currency === currencyManager.currentFromCurrency && data.sell_currency === currencyManager.currentToCurrency) {
-        updateGlobalProgressBar(data.progress, data.message);
+        // 只更新目前選定 period 的全域進度
+        const periodKey = (currentPeriod || '7').toString();
+        const percent = data.period_progress && data.period_progress[periodKey] != null
+          ? data.period_progress[periodKey]
+          : data.progress;
+        // 組合符合當前 period 的訊息（X/需要值）
+        let msg = data.message;
+        if (data.period_needed && data.current_points != null && data.period_needed[periodKey] != null) {
+          const needed = data.period_needed[periodKey];
+          const have = Math.min(data.current_points, needed);
+          msg = `已獲取 ${have}/${needed} 天數據...`;
+        }
+        updateGlobalProgressBar(percent, msg);
     }
   });
   
@@ -365,30 +377,27 @@ function setupSSEConnection() {
       chartData.buy_currency === currencyManager.currentFromCurrency &&
       chartData.sell_currency === currencyManager.currentToCurrency
     ) {
+      // 僅在該事件的 period 等於當前選擇的 period 時才更新 UI
+      const isCurrentPeriod = String(chartData.period) === String(currentPeriod);
       // 清除超時計時器
       if (currencyManager.chartLoadTimeout) {
         clearTimeout(currencyManager.chartLoadTimeout);
         currencyManager.chartLoadTimeout = null;
       }
 
-      // 隱藏全域進度條
-      hideGlobalProgressBar(() => {
-        // 渲染圖表
-        renderChart(chartData.chart_url, chartData.stats, chartData.buy_currency, chartData.sell_currency, chartData.period);
-        
-        // 更新日期範圍
-        updateDateRange(chartData.stats.date_range);
+      // 更新前端快取（無論是否為當前 period）
+      const cacheKey = `${chartData.buy_currency}_${chartData.sell_currency}_${chartData.period}`;
+      chartCache[cacheKey] = chartData;
 
-        // 更新前端快取
-        const cacheKey = `${chartData.buy_currency}_${chartData.sell_currency}_${chartData.period}`;
-        chartCache[cacheKey] = chartData;
-
-        // Add to user history
-        userHistoryManager.addPair(chartData.buy_currency, chartData.sell_currency);
-
-        // 一旦圖表準備就緒，設定載入狀態為 false
-        currencyManager.setLoading('chart', false);
-      });
+      if (isCurrentPeriod) {
+        // 隱藏全域進度條並渲染
+        hideGlobalProgressBar(() => {
+          renderChart(chartData.chart_url, chartData.stats, chartData.buy_currency, chartData.sell_currency, chartData.period);
+          updateDateRange(chartData.stats.date_range);
+          // 一旦圖表準備就緒，設定載入狀態為 false
+          currencyManager.setLoading('chart', false);
+        });
+      }
     }
   });
   
@@ -396,15 +405,18 @@ function setupSSEConnection() {
   eventSource.addEventListener('chart_error', function(event) {
     const data = JSON.parse(event.data);
     if (data.buy_currency === currencyManager.currentFromCurrency && data.sell_currency === currencyManager.currentToCurrency) {
+        const isCurrentPeriod = data.period == null || String(data.period) === String(currentPeriod);
         // 清除超時計時器
         if (currencyManager.chartLoadTimeout) {
             clearTimeout(currencyManager.chartLoadTimeout);
             currencyManager.chartLoadTimeout = null;
         }
-        hideGlobalProgressBar(() => {
-            handleChartError(data.message);
-            currencyManager.setLoading('chart', false);
-        });
+        if (isCurrentPeriod) {
+          hideGlobalProgressBar(() => {
+              handleChartError(data.message);
+              currencyManager.setLoading('chart', false);
+          });
+        }
     }
   });
 
@@ -485,8 +497,10 @@ function setupEventListeners() {
       // 更新當前週期
       currentPeriod = newPeriod;
 
-      // 立即更新按鈕的 UI 狀態
+  // 立即更新按鈕的 UI 狀態
       updatePeriodButtons(currentPeriod);
+  // 切換 period 時，重置並顯示全域進度條
+  showGlobalProgressBar(`正在為您準備 ${currencyManager.currentFromCurrency}-${currencyManager.currentToCurrency} 的圖表 (${currentPeriod} 天)...`);
       
       // 使用 currencyManager 的方法來載入圖表
       currencyManager.loadChart();

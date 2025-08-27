@@ -305,9 +305,28 @@ class ExchangeRateManager:
                         if rate is not None:
                             rates_data[date_str] = rate
 
-                        # 發送進度更新
+                        # 發送進度更新（加入各 period 進度）
                         progress = int((fetched_count / total_days_to_fetch) * 100)
-                        send_sse_event('progress_update', {'progress': progress, 'buy_currency': buy_currency, 'sell_currency': sell_currency, 'message': f'已獲取 {fetched_count}/{total_days_to_fetch} 天數據...'})
+                        # 以已成功取得的資料量來估算各期間進度（更貼近實際可生成狀態）
+                        current_points = len(rates_data)
+                        period_progress = {}
+                        for p, needed in chart_generation_checkpoints.items():
+                            # 防止除以零並限制 0-100
+                            pct = int(min(100, max(0, (current_points / max(1, needed)) * 100)))
+                            period_progress[str(p)] = pct
+                        # 也將每個 period 所需門檻與目前累計成功點數傳給前端
+                        period_needed = {str(p): needed for p, needed in chart_generation_checkpoints.items()}
+                        send_sse_event('progress_update', {
+                            'progress': progress,
+                            'buy_currency': buy_currency,
+                            'sell_currency': sell_currency,
+                            'message': f'已獲取 {fetched_count}/{total_days_to_fetch} 天數據...',
+                            'fetched_count': fetched_count,
+                            'total_days': total_days_to_fetch,
+                            'period_progress': period_progress,
+                            'current_points': current_points,
+                            'period_needed': period_needed
+                        })
 
                         # 4. 帶前置條件的漸進式生成
                         for period in chart_generation_checkpoints:
